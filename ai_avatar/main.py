@@ -4,21 +4,10 @@ main.py — Flask Server + Embedded Avatar UI
 All frontend logic lives here as a Python string (AVATAR_HTML).
 No separate .html file is needed.
 
-Routes
-------
-  GET  /              → serves the embedded avatar chat page
-  GET  /static/<file> → serves static files (avatar.glb)
-  POST /listen        → voice pipeline: audio → STT → LLM → TTS → lipsync
-  POST /text          → text pipeline:  text  →      LLM → TTS → lipsync
-
-Run
----
+Run:
   cd ai_avatar
+  .\tts_env\Scripts\activate
   python main.py
-
-Prerequisites (running in background before starting):
-  ollama serve          # LLM server
-  ollama pull llama3    # download model once
 """
 
 import os
@@ -35,7 +24,7 @@ load_dotenv()
 # ── Import pipeline modules ───────────────────────────────────
 import stt       # Whisper speech-to-text
 import llm       # Ollama LLaMA 3
-import tts       # Coqui XTTS-v2
+import tts       # Edge-TTS
 import lipsync   # librosa → viseme timestamps
 import emotions  # keyword → morph weights
 
@@ -48,7 +37,7 @@ _TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  EMBEDDED AVATAR UI  (all frontend logic in Python string)
+#  EMBEDDED AVATAR UI
 # ═══════════════════════════════════════════════════════════════
 
 AVATAR_HTML = """<!DOCTYPE html>
@@ -57,7 +46,6 @@ AVATAR_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Aisha — AI Avatar</title>
-<meta name="description" content="Multilingual AI avatar powered by LLaMA 3 and Coqui XTTS."/>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -165,16 +153,24 @@ header h1{font-size:1.2rem;font-weight:700;letter-spacing:.02em;}
 </div>
 <div id="toast"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/js/loaders/GLTFLoader.js"></script>
-<script>
-'use strict';
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ── Three.js scene ─────────────────────────────────────────
 const canvas   = document.getElementById('three-canvas');
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 
 const scene  = new THREE.Scene();
@@ -193,7 +189,6 @@ function onResize(){
 onResize();
 new ResizeObserver(onResize).observe(canvas.parentElement);
 
-// Lights
 scene.add(new THREE.AmbientLight(0xffffff,0.6));
 const key = new THREE.DirectionalLight(0xfff0e0,1.2);
 key.position.set(1.5,3,2); key.castShadow=true; scene.add(key);
@@ -204,7 +199,7 @@ rim.position.set(0,2,-3); scene.add(rim);
 
 // ── Avatar load ────────────────────────────────────────────
 let avatar=null, morphMesh=null, morphDict={};
-const loader = new THREE.GLTFLoader();
+const loader = new GLTFLoader();
 loader.load('/static/avatar.glb', gltf=>{
   avatar = gltf.scene;
   scene.add(avatar);
@@ -218,22 +213,39 @@ loader.load('/static/avatar.glb', gltf=>{
   });
   console.log('[avatar] loaded. Morphs:', Object.keys(morphDict).join(', '));
   document.getElementById('status-dot').style.background='#56f89a';
-}, null, err=>showToast('Avatar load error: '+err.message));
+}, null, err=>{
+  console.error(err);
+  showToast('Avatar load error: '+err.message);
+});
 
-function setMorph(name,val){
+window.setMorph = (name,val)=>{
   if(!morphMesh) return;
   const i=morphDict[name]; if(i===undefined) return;
   morphMesh.morphTargetInfluences[i]=Math.max(0,Math.min(1,val));
 }
 
-// ── Idle: blink, breathe, eye drift ───────────────────────
+// ── Idle & Lipsync Logic ──────────────────────────────────
 let blinkTimer=3, blinkPhase='open', blinkT=0;
 let eyeTarget={x:0,y:0}, eyeCur={x:0,y:0}, eyeDriftT=2;
 let breatheT=0;
 
+let visQ=[], visStart=0, lipPlaying=false;
+const LIP_MORPHS=[
+  'viseme_PP','viseme_FF','viseme_TH','viseme_DD','viseme_kk',
+  'viseme_CH','viseme_SS','viseme_nn','viseme_RR','viseme_aa',
+  'viseme_E','viseme_I','viseme_O','viseme_U','jawOpen'
+];
+
+let eTarget={}, eCur={};
+const EMO_MORPHS=[
+  'mouthSmile','mouthFrownLeft','mouthFrownRight',
+  'browDownLeft','browDownRight','browInnerUp',
+  'eyeWideLeft','eyeWideRight','cheekSquintLeft','cheekSquintRight'
+];
+const EMO_ICONS={happy:'😊',sad:'😢',angry:'😠',surprised:'😲',neutral:'😌'};
+
 function idleUpdate(dt){
   if(!morphMesh) return;
-  // Blink
   blinkTimer-=dt;
   if(blinkTimer<=0){blinkPhase='closing';blinkT=0;blinkTimer=3+Math.random()*4;}
   if(blinkPhase!=='open'){
@@ -245,7 +257,6 @@ function idleUpdate(dt){
       else{blinkPhase='open';setMorph('eyeBlinkLeft',0);setMorph('eyeBlinkRight',0);}
     }
   }
-  // Eye drift
   eyeDriftT-=dt;
   if(eyeDriftT<=0){
     eyeTarget.x=(Math.random()-.5)*.4; eyeTarget.y=(Math.random()-.5)*.2;
@@ -257,20 +268,9 @@ function idleUpdate(dt){
   setMorph('eyeLookOutRight',Math.max(0, eyeCur.x));
   setMorph('eyeLookUpLeft',  Math.max(0, eyeCur.y));
   setMorph('eyeLookDownLeft',Math.max(0,-eyeCur.y));
-  // Breathe
   breatheT+=dt*0.4;
   if(avatar) avatar.position.y=Math.sin(breatheT)*0.003;
 }
-
-// ── Lip sync ───────────────────────────────────────────────
-let visQ=[], visStart=0, lipPlaying=false;
-const LIP_MORPHS=[
-  'viseme_PP','viseme_FF','viseme_TH','viseme_DD','viseme_kk',
-  'viseme_CH','viseme_SS','viseme_nn','viseme_RR','viseme_aa',
-  'viseme_E','viseme_I','viseme_O','viseme_U','jawOpen'
-];
-
-function startLipsync(visemes,startMs){visQ=visemes;visStart=startMs;lipPlaying=true;}
 
 function lipsyncUpdate(){
   if(!lipPlaying||!morphMesh) return;
@@ -291,21 +291,6 @@ function lipsyncUpdate(){
   }
 }
 
-// ── Emotion ────────────────────────────────────────────────
-const EMO_MORPHS=[
-  'mouthSmile','mouthFrownLeft','mouthFrownRight',
-  'browDownLeft','browDownRight','browInnerUp',
-  'eyeWideLeft','eyeWideRight','cheekSquintLeft','cheekSquintRight'
-];
-const EMO_ICONS={happy:'😊',sad:'😢',angry:'😠',surprised:'😲',neutral:'😌'};
-let eTarget={}, eCur={};
-
-function applyEmotion(emotion,weights){
-  eTarget={...weights};
-  document.getElementById('emotion-badge').textContent=
-    (EMO_ICONS[emotion]||'😌')+' '+emotion.charAt(0).toUpperCase()+emotion.slice(1);
-}
-
 function emotionUpdate(dt){
   if(!morphMesh) return;
   for(const m of EMO_MORPHS){
@@ -316,123 +301,108 @@ function emotionUpdate(dt){
   }
 }
 
-// ── Render loop ────────────────────────────────────────────
-let lastT=performance.now();
 function animate(){
   requestAnimationFrame(animate);
-  const now=performance.now(), dt=Math.min((now-lastT)/1000,0.1); lastT=now;
+  const now=performance.now();
+  const dt=Math.min((now-lastT)/1000,0.1);
+  lastT=now;
   idleUpdate(dt); lipsyncUpdate(); emotionUpdate(dt);
   renderer.render(scene,camera);
 }
+let lastT=performance.now();
 animate();
 
-// ── Mic recording ──────────────────────────────────────────
-let mediaRec=null, audioChunks=[], micStream=null;
+// ── Interaction Logic ──────────────────────────────────────
 const micBtn=document.getElementById('mic-btn');
+let mediaRec=null, audioChunks=[], micStream=null;
 
 micBtn.addEventListener('mousedown',startRec);
-micBtn.addEventListener('touchstart',startRec,{passive:true});
 micBtn.addEventListener('mouseup',stopRec);
-micBtn.addEventListener('mouseleave',stopRec);
-micBtn.addEventListener('touchend',stopRec);
 
-async function startRec(e){
-  e.preventDefault();
+async function startRec(){
   if(micBtn.classList.contains('thinking')) return;
   try{
     micStream=await navigator.mediaDevices.getUserMedia({audio:true});
     audioChunks=[];
-    const mime=MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ?'audio/webm;codecs=opus':'audio/webm';
-    mediaRec=new MediaRecorder(micStream,{mimeType:mime});
+    mediaRec=new MediaRecorder(micStream);
     mediaRec.ondataavailable=e=>audioChunks.push(e.data);
     mediaRec.onstop=onRecStop;
     mediaRec.start();
     micBtn.classList.add('recording');
-    micBtn.textContent='⏹';
   }catch(err){showToast('Mic denied: '+err.message);}
 }
 
 function stopRec(){
   if(!mediaRec||mediaRec.state==='inactive') return;
   mediaRec.stop(); micStream.getTracks().forEach(t=>t.stop());
-  micBtn.classList.remove('recording'); micBtn.textContent='🎤';
+  micBtn.classList.remove('recording');
 }
 
 async function onRecStop(){
-  const blob=new Blob(audioChunks,{type:audioChunks[0]?.type||'audio/webm'});
+  const blob=new Blob(audioChunks);
   if(blob.size<1000) return;
   setBusy(true);
-  const fd=new FormData(); fd.append('audio',blob,'rec.webm');
+  const fd=new FormData(); fd.append('audio',blob);
   try{
     const res=await fetch('/listen',{method:'POST',body:fd});
-    if(!res.ok) throw new Error('Server '+res.status);
-    const data=await res.json();
-    if(data.transcript) showTranscript(data.transcript);
-    handleReply(data);
-  }catch(err){showToast(err.message);}
-  finally{setBusy(false);}
-}
-
-// ── Text input ─────────────────────────────────────────────
-document.getElementById('send-btn').addEventListener('click',sendText);
-document.getElementById('text-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendText();});
-
-async function sendText(){
-  const inp=document.getElementById('text-input');
-  const msg=inp.value.trim(); if(!msg) return;
-  inp.value=''; showTranscript(msg); setBusy(true);
-  try{
-    const res=await fetch('/text',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message:msg,language:'en'})
-    });
-    if(!res.ok) throw new Error('Server '+res.status);
     handleReply(await res.json());
   }catch(err){showToast(err.message);}
   finally{setBusy(false);}
 }
 
-// ── Response handler ───────────────────────────────────────
+document.getElementById('send-btn').addEventListener('click',sendText);
+async function sendText(){
+  const inp=document.getElementById('text-input');
+  const msg=inp.value.trim(); if(!msg) return;
+  inp.value=''; setBusy(true);
+  try{
+    const res=await fetch('/text',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:msg})
+    });
+    handleReply(await res.json());
+  }catch(err){showToast(err.message);}
+  finally{setBusy(false);}
+}
+
 function handleReply(data){
   if(data.error){showToast(data.error);return;}
+  if(data.transcript) showTranscript(data.transcript);
   showSubtitle(data.reply||'');
-  if(data.emotion&&data.weights) applyEmotion(data.emotion,data.weights);
+  if(data.emotion) {
+     eTarget={...data.weights};
+     document.getElementById('emotion-badge').textContent=
+       (EMO_ICONS[data.emotion]||'😌')+' '+data.emotion.toUpperCase();
+  }
   if(data.audio_base64){
     const buf=b64ToBuffer(data.audio_base64);
     new AudioContext().decodeAudioData(buf,ab=>{
       const ctx=new AudioContext();
       const src=ctx.createBufferSource(); src.buffer=ab;
       src.connect(ctx.destination);
-      const t0=performance.now(); src.start(0);
-      if(data.visemes&&data.visemes.length) startLipsync(data.visemes,t0);
-    },err=>showToast('Audio error: '+err));
+      visQ=data.visemes; visStart=performance.now(); lipPlaying=true;
+      src.start(0);
+    });
   }
 }
 
-// ── UI helpers ─────────────────────────────────────────────
 function showTranscript(t){
   const el=document.getElementById('transcript-badge');
   el.textContent='🗣 '+t; el.classList.add('show');
   setTimeout(()=>el.classList.remove('show'),5000);
 }
-let stTimer=null;
 function showSubtitle(t){
   const el=document.getElementById('subtitle');
   el.textContent=t; el.classList.add('show');
-  if(stTimer) clearTimeout(stTimer);
-  stTimer=setTimeout(()=>el.classList.remove('show'),Math.max(4000,t.length*60));
+  setTimeout(()=>el.classList.remove('show'),5000);
 }
-let toastTimer=null;
 function showToast(m){
   const el=document.getElementById('toast');
   el.textContent='⚠ '+m; el.classList.add('show');
-  if(toastTimer) clearTimeout(toastTimer);
-  toastTimer=setTimeout(()=>el.classList.remove('show'),4500);
+  setTimeout(()=>el.classList.remove('show'),4000);
 }
 function setBusy(b){
   micBtn.classList.toggle('thinking',b);
-  document.getElementById('proc-ring').classList.toggle('show',b);
   document.getElementById('send-btn').disabled=b;
 }
 function b64ToBuffer(b64){
@@ -440,11 +410,6 @@ function b64ToBuffer(b64){
   for(let i=0;i<bin.length;i++) v[i]=bin.charCodeAt(i);
   return buf;
 }
-
-// Default neutral emotion on load
-applyEmotion('neutral',{mouthSmile:0.05,mouthFrownLeft:0,mouthFrownRight:0,
-  browDownLeft:0,browDownRight:0,browInnerUp:0,
-  eyeWideLeft:0,eyeWideRight:0,cheekSquintLeft:0,cheekSquintRight:0});
 </script>
 </body>
 </html>"""
@@ -456,115 +421,51 @@ applyEmotion('neutral',{mouthSmile:0.05,mouthFrownLeft:0,mouthFrownRight:0,
 
 @app.route("/")
 def index():
-    """Serve the avatar UI — rendered from the Python string above."""
     return render_template_string(AVATAR_HTML)
-
 
 @app.route("/static/<path:filename>")
 def serve_static(filename):
-    """Serve avatar.glb and any other static assets."""
     return send_from_directory("static", filename)
-
 
 @app.route("/listen", methods=["POST"])
 def listen():
-    """
-    Voice pipeline:
-      1. Save uploaded audio blob
-      2. Whisper STT  → transcript + language
-      3. Ollama LLM   → Aisha reply
-      4. XTTS-v2 TTS  → WAV file
-      5. librosa      → viseme timestamps
-      6. emotions     → morph weights
-      7. Return JSON
-    """
     if "audio" not in request.files:
-        return jsonify({"error": "No audio in request."}), 400
-
+        return jsonify({"error": "No audio."}), 400
     audio_file = request.files["audio"]
-    suffix     = pathlib.Path(audio_file.filename or "a.webm").suffix or ".webm"
-    tmp_path   = _TEMP_DIR / f"upload_{os.getpid()}_{id(request)}{suffix}"
+    tmp_path = _TEMP_DIR / f"upload_{os.getpid()}.webm"
     audio_file.save(str(tmp_path))
-
     try:
         return _run_pipeline(str(tmp_path))
     finally:
         tmp_path.unlink(missing_ok=True)
 
-
 @app.route("/text", methods=["POST"])
 def text_input():
-    """
-    Text pipeline (no STT step):
-      Body JSON: { "message": "...", "language": "en" }
-    """
-    data     = request.get_json(force=True, silent=True) or {}
-    message  = data.get("message", "").strip()
-    language = data.get("language", "en")
-
-    if not message:
-        return jsonify({"error": "No message provided."}), 400
-
-    return _run_pipeline_from_text(message, language)
-
-
-# ═══════════════════════════════════════════════════════════════
-#  PIPELINE HELPERS
-# ═══════════════════════════════════════════════════════════════
+    data = request.get_json(force=True, silent=True) or {}
+    message = data.get("message", "").strip()
+    if not message: return jsonify({"error": "No message."}), 400
+    return _run_pipeline_from_text(message, "en")
 
 def _run_pipeline(audio_path: str):
-    """Full pipeline starting from an audio file."""
     transcript, language = stt.transcribe(audio_path)
-    if not transcript:
-        return jsonify({"error": "Could not transcribe audio."}), 422
+    if not transcript: return jsonify({"error": "No transcript."}), 422
     return _run_pipeline_from_text(transcript, language)
 
-
 def _run_pipeline_from_text(transcript: str, language: str):
-    """LLM → TTS → lipsync → emotions → JSON response."""
-    # 1. Generate Aisha's reply
     reply = llm.generate_reply(transcript, language)
-
-    # 2. Synthesise speech to WAV
-    wav_filename = f"reply_{os.getpid()}.wav"
-    wav_path     = tts.synthesise(reply, language, output_filename=wav_filename)
-
-    # 3. Extract viseme timing from the WAV
+    wav_path = tts.synthesise(reply, language)
     viseme_events = lipsync.extract_visemes(wav_path)
-
-    # 4. Detect emotion from reply text
     emotion_data = emotions.detect_emotion(reply)
-
-    # 5. Encode WAV as base64 for inline transport to browser
     with open(wav_path, "rb") as f:
         audio_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    # Clean up the WAV — browser has it now
     pathlib.Path(wav_path).unlink(missing_ok=True)
-
     return jsonify({
-        "transcript":   transcript,
-        "reply":        reply,
-        "language":     language,
-        "audio_base64": audio_b64,
-        "visemes":      viseme_events,
-        "emotion":      emotion_data["emotion"],
-        "weights":      emotion_data["weights"],
+        "transcript": transcript, "reply": reply, "audio_base64": audio_b64,
+        "visemes": viseme_events, "emotion": emotion_data["emotion"],
+        "weights": emotion_data["weights"]
     })
-
-
-# ═══════════════════════════════════════════════════════════════
-#  ENTRY POINT
-# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    print(f"\n{'='*50}")
-    print(f"  Aisha AI Avatar  ->  http://localhost:{port}")
-    print(f"{'='*50}\n")
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,    # keep False — reload would re-import heavy models
-        threaded=False, # keep False — avoids CUDA/XTTS context conflicts
-    )
+    print(f"\n Aisha AI Avatar -> http://localhost:{port}\n")
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
