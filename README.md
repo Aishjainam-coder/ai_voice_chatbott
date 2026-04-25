@@ -1,14 +1,15 @@
-# 🤖 JASON - Your AI Assistant
+# 🤖 JASON - Your AI Assistant with Beyond Presence Avatar
 
-**Voice Input • Voice Output • Animated Avatar • Lip-Sync • Emotions**
+**Voice Input • Voice Output • Cloud Avatar • Lip-Sync • Emotions**
 
 A complete AI avatar chatbot that:
 - 🎤 **Voice Input** - Speak naturally to Jason!
-- 🔊 **Voice Output** - Jason responds with natural speech and lip-sync
-- 🎭 **Animated Avatar** - Your character comes to life with emotions
-- 👄 **Lip-Sync Animation** - Perfect mouth movements with speech
+- 🔊 **Voice Output** - Jason responds with natural speech
+- 🌐 **Cloud 3D Avatar** - Professional Beyond Presence avatar with full animation
+- 👄 **Automatic Lip-Sync** - Perfect mouth movements with speech (Beyond Presence handles it)
 - 💬 **Real-time Conversation** - Seamless voice-to-voice interaction
-- 🆓 **100% Free** - All models run locally, no API costs
+- 😊 **Emotion Expressions** - Avatar reacts to conversation tone
+- 🆓 **100% Free for Core** - Ollama LLM runs locally, Beyond Presence API for avatar
 
 ---
 
@@ -17,11 +18,11 @@ A complete AI avatar chatbot that:
 ### 1. Install Python Dependencies
 
 ```bash
-cd "c:\Users\hp\ai chatbot"
+cd c:\Users\acre\ai_voice_chatbott
 pip install -r requirements.txt
 ```
 
-**Note:** Voice input uses Gradio's built-in mic (records in browser) - **no PyAudio needed!** Works with Python 3.14.
+**Note:** Voice input uses Gradio's built-in mic (records in browser) - **no PyAudio needed!**
 
 ### 2. Install Ollama (Free Local AI)
 
@@ -33,13 +34,32 @@ pip install -r requirements.txt
    ```
    Or: `ollama pull mistral` (smaller, faster)
 
-### 3. Add Your CEO/Character Image
+### 3. Configure Beyond Presence Avatar (REQUIRED)
 
-- Create folder: `assets/`
-- Add image: `assets/character.png` (or .jpg)
-- Use a clear face photo for best results
+You need a Beyond Presence account for the cloud avatar:
 
-### 4. Run the Chatbot
+1. **Create Beyond Presence Account**:
+   - Go to https://beyondpresence.com
+   - Sign up for free account
+
+2. **Upload Your Avatar**:
+   - In the Beyond Presence dashboard, upload your `.glb` file
+   - Or use a provided template avatar
+   - Copy the **Avatar ID**
+
+3. **Get API Key**:
+   - Go to Account > API Keys
+   - Copy your API key
+
+4. **Edit `.env` file** in this folder:
+   ```bash
+   BEYOND_PRESENCE_API_KEY=sk-your_actual_key_here
+   AVATAR_ID=your_avatar_id_here
+   BEYOND_PRESENCE_API_ENDPOINT=https://api.beyondpresence.com/v1
+   OLLAMA_MODEL=llama3.2
+   ```
+
+### 4. Run JASON
 
 ```bash
 python ai_chatbot.py
@@ -47,25 +67,35 @@ python ai_chatbot.py
 
 Then open: **http://127.0.0.1:7860**
 
+You should see:
+- ✅ **Beyond Presence Avatar ACTIVE** status message
+- 🌐 Your cloud avatar ready to interact
+- 🎤 Voice input ready
+- 💬 Conversation history below
+
 ---
 
 ## 🎯 How to Use
 
 ### Voice Mode (Recommended):
-1. **Look at your AI Avatar** at the top of the screen
-2. **Click the microphone** 🎤 to record your voice
-3. **Speak naturally** - ask anything to your AI avatar
-4. **Click "Speak & Respond"** or wait for auto-processing
-5. **Watch the magic** - AI avatar responds with voice + perfect lip-sync animation!
+1. **Look at your Beyond Presence Avatar** at the top
+2. **Click the microphone** 🎤 button
+3. **Speak naturally** - ask anything
+4. **AI responds with**:
+   - Voice output (text-to-speech)
+   - Avatar animates with emotions
+   - Perfect lip-sync (Beyond Presence handles it)
+   - Conversation displayed below
 
 ### Text Mode (Backup):
-- Type your message in the text box if voice doesn't work
-- Click "Send Text" or press Enter
+- Type your message if voice doesn't work
+- Click "Send ➤" or press Enter
 
-### Interface Layout:
-- **🤖 AI Avatar** (left) - Large animated character display
-- **🎤 Voice Controls** (right) - Microphone, record button, status
-- **💬 Conversation** (bottom) - Chat history
+### Features:
+- **Emotion Detection**: Avatar shows different emotions based on conversation
+- **Manual Emotion Override**: Choose avatar emotion from dropdown in "Manual Emotion Override"
+- **Auto Lip-Sync**: Beyond Presence automatically animates the mouth
+- **Face-Only Display**: Just the face shows, not full body
 - **📝 Text Input** (collapsed) - Backup text option
 
 ---
