@@ -560,7 +560,7 @@ def _run_pipeline_from_text(transcript: str, language: str):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     print(f"\n{'='*50}")
-    print(f"  Aisha AI Avatar  →  http://localhost:{port}")
+    print(f"  Aisha AI Avatar  ->  http://localhost:{port}")
     print(f"{'='*50}\n")
     app.run(
         host="0.0.0.0",

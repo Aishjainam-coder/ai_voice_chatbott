@@ -22,11 +22,9 @@ openai-whisper==20250625
 # ── LLM backend ───────────────────────────────────────────────
 ollama==0.3.3
 
-# ── Text-to-Speech: Coqui XTTS-v2 ───────────────────────────
-# TTS requires Microsoft C++ Build Tools to compile monotonic_align.
-# Download: https://visualstudio.microsoft.com/visual-cpp-build-tools/
-# Install with: pip install TTS==0.22.0 --no-deps  (after building tools)
-# TTS==0.22.0   <-- install separately, see install.bat
+# ── Text-to-Speech: Microsoft Edge-TTS ─────────────────────────
+# Edge-TTS is high-quality and requires NO C++ Build Tools.
+edge-tts==7.2.8
 
 # ── Audio / Numeric stack ────────────────────────────────────
 # numpy 1.26.4: latest 1.x prebuilt wheel for cp310-win_amd64
