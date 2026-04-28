@@ -36,7 +36,7 @@ pip install ^
 echo [5/5] Installing TTS==0.22.0 (requires C++ Build Tools)...
 echo       If this fails, install Build Tools from:
 echo       https://visualstudio.microsoft.com/visual-cpp-build-tools/
-pip install TTS==0.22.0 --no-deps
+REM pip install TTS==0.22.0 --no-deps
 
 echo.
 echo ============================================================

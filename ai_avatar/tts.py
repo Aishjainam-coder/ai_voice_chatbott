@@ -39,7 +39,7 @@ def synthesise(text: str, language: str, output_filename: str | None = None) -> 
         output_filename = f"reply_{language}_{os.getpid()}.wav"
     wav_path = str(_OUTPUT_DIR / output_filename)
 
-    print(f"[tts] Synthesising with Edge-TTS ({voice}) → {wav_path}")
+    print(f"[tts] Synthesising with Edge-TTS ({voice}) -> {wav_path}")
 
     # edge-tts is asynchronous, so we run it in the event loop
     asyncio.run(_generate_audio(text, voice, wav_path))

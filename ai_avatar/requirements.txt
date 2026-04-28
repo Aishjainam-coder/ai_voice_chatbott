@@ -1,45 +1,27 @@
-# ============================================================
-# AI Avatar Chatbot — Requirements
-# Python 3.10 (64-bit) | Virtual env: tts_env
-#
-# SETUP INSTRUCTIONS:
-#   1. py -3.10 -m venv tts_env
-#   2. tts_env\Scripts\activate
-#   3. python -m pip install --upgrade pip setuptools wheel
-#   4. pip install -r requirements.txt
-#   5. pip install TTS==0.22.0 --no-deps
-#      (requires Microsoft C++ Build Tools — see install.bat)
-# ============================================================
-
-# ── Web server ────────────────────────────────────────────────
+# ── Web server ─────────────────────────
 flask==3.1.0
 flask-cors==6.0.0
 
-# ── Speech-to-Text ────────────────────────────────────────────
-# openai-whisper 20250625 ships as a pre-built wheel (no C++ needed)
-openai-whisper==20250625
+# ── Speech-to-Text ─────────────────────
+openai-whisper
+tqdm
+typing-extensions>=4.5.0
 
-# ── LLM backend ───────────────────────────────────────────────
+# ── LLM backend ────────────────────────
 ollama==0.3.3
 
-# ── Text-to-Speech: Microsoft Edge-TTS ─────────────────────────
-# Edge-TTS is high-quality and requires NO C++ Build Tools.
+# ── Text-to-Speech ─────────────────────
 edge-tts==7.2.8
 
-# ── Audio / Numeric stack ────────────────────────────────────
-# numpy 1.26.4: latest 1.x prebuilt wheel for cp310-win_amd64
-# librosa 0.10.2.post1 excludes 1.22.x — 1.26.4 satisfies both
+# ── Audio / Numeric ────────────────────
 numpy==1.26.4
 scipy==1.13.1
 librosa==0.10.2.post1
 soundfile==0.12.1
 
-# ── PyTorch (CPU) ─────────────────────────────────────────────
-# Compatible with Python 3.10 + numpy 1.26.4
-# For GPU (CUDA 12.1):
-#   pip install torch==2.3.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# ── PyTorch (CPU stable) ───────────────
 torch==2.3.1
 
-# ── Misc utilities ───────────────────────────────────────────
+# ── Utilities ──────────────────────────
 python-dotenv==1.0.1
 requests==2.32.3

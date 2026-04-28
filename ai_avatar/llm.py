@@ -61,21 +61,29 @@ def generate_reply(user_message: str, language: str) -> str:
 
     print(f"[llm] Sending to {_MODEL}: {user_message[:80]!r}  (lang={language})")
 
-    # ── Call Ollama synchronously (non-streaming for simplicity) ─
-    response = ollama.chat(
-        model=_MODEL,
-        messages=[
-            {"role": "system",    "content": _SYSTEM_PROMPT},
-            {"role": "user",      "content": augmented_message},
-        ],
-        options={
-            "temperature": 0.75,   # slightly creative but coherent
-            "top_p":       0.9,
-            "num_predict": 200,    # max tokens — keeps replies short
-        },
-    )
+    try:
+        response = ollama.chat(
+            model=_MODEL,
+            messages=[
+                {"role": "system",    "content": _SYSTEM_PROMPT},
+                {"role": "user",      "content": augmented_message},
+            ],
+            options={
+                "temperature": 0.75,
+                "top_p":       0.9,
+                "num_predict": 200,
+            },
+        )
+        reply: str = response["message"]["content"].strip()
+    except Exception as e:
+        print(f"[llm] ERROR: {e}")
+        # Fallback: Ollama not running or model not available
+        reply = (
+            "I'm sorry, I can't connect to my AI brain right now. "
+            "Please make sure Ollama is running: open a terminal and type 'ollama serve', "
+            f"then pull the model with 'ollama pull {_MODEL}'."
+        )
 
-    reply: str = response["message"]["content"].strip()
     print(f"[llm] Aisha reply: {reply[:120]!r}")
     return reply
 
