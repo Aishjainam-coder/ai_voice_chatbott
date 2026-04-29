@@ -5,12 +5,25 @@ Run:
   python main.py
 """
 
-import os, base64, pathlib, concurrent.futures
+import os, base64, pathlib, concurrent.futures, time
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Force FFmpeg into PATH ────────────────────────────────────
+import os, shutil
+ffmpeg_path = r"C:\ffmpeg\ffmpeg-8.1-essentials_build\bin"
+if ffmpeg_path not in os.environ["PATH"]:
+    os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ["PATH"]
+
+# Verify it works
+if shutil.which("ffmpeg"):
+    print(f"[system] FFmpeg found at: {shutil.which('ffmpeg')}")
+else:
+    print(f"[system] WARNING: FFmpeg NOT found even after forcing path!")
+# ─────────────────────────────────────────────────────────────
 
 import stt
 import llm
@@ -327,9 +340,17 @@ loader.load('/static/avatar.glb', gltf=>{
   avatar = gltf.scene;
   scene.add(avatar);
   avatar.traverse(o=>{
-    // Hide teeth meshes if they exist
-    if (o.isMesh && (o.name.toLowerCase().includes('teeth') || o.name.toLowerCase().includes('tooth'))) {
+    // Hide internal mouth meshes (teeth, gums, tongue) if they exist
+    if (o.isMesh && (
+        o.name.toLowerCase().includes('teeth') || 
+        o.name.toLowerCase().includes('tooth') ||
+        o.name.toLowerCase().includes('gum') ||
+        o.name.toLowerCase().includes('tongue') ||
+        o.name.toLowerCase().includes('mouth_internal')
+    )) {
       o.visible = false;
+      o.castShadow = false;
+      o.receiveShadow = false;
     }
     if(o.isMesh && o.morphTargetDictionary &&
        Object.keys(o.morphTargetDictionary).length > 0){
@@ -427,7 +448,7 @@ function emotionUpdate(dt){
   for(const m of EMO_MORPHS){
     const i=morphDict[m]; if(i===undefined) continue;
     if(eCur[m]===undefined) eCur[m]=0;
-    eCur[m] += ((eTarget[m]||0)-eCur[m])*dt*2;
+    eCur[m] += ((eTarget[m]||0)-eCur[m])*dt*4;
     morphMesh.morphTargetInfluences[i]=eCur[m];
   }
 }
@@ -514,7 +535,17 @@ function addChatMessage(role, text) {
   const history = document.getElementById('chat-history');
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  div.textContent = text;
+  
+  // Robustness: If text is somehow still JSON, try to extract 'text' field
+  let displayBody = text;
+  if (text.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed.text) displayBody = parsed.text;
+    } catch(e) {}
+  }
+  
+  div.textContent = displayBody;
   history.appendChild(div);
   history.scrollTop = history.scrollHeight;
 }
@@ -525,9 +556,15 @@ function handleReply(data){
   if(data.reply) addChatMessage('aishwarya', data.reply);
   
   if(data.emotion){
+    // Update weights for transition logic
     eTarget = {...(data.weights||{})};
-    document.getElementById('emotion-badge').textContent =
-      (EMO_ICONS[data.emotion]||'😌')+' '+data.emotion.toUpperCase();
+    // Ensure the badge is updated
+    const badge = document.getElementById('emotion-badge');
+    badge.textContent = (EMO_ICONS[data.emotion]||'😌')+' '+data.emotion.toUpperCase();
+    
+    // Pulse effect on badge for visibility
+    badge.style.transform = 'scale(1.2)';
+    setTimeout(() => badge.style.transform = 'scale(1)', 200);
   }
   if(data.audio_base64){
     playAudio(data.audio_base64, data.visemes||[]);
@@ -626,25 +663,36 @@ def _run_pipeline(audio_path: str):
 
 def _run_pipeline_from_text(transcript: str, language: str):
     try:
-        # Step 1: LLM Generation (Synchronous - we need the full text for TTS and Emotions)
-        reply = llm.generate_reply(transcript, language)
+        print(f"\n[pipeline] Starting for: {transcript[:50]}...")
+        t0 = time.time()
+        
+        # Step 1: LLM Generation
+        reply, llm_emotion = llm.generate_reply(transcript, language)
+        t_llm = time.time()
+        print(f"[timer] LLM took: {t_llm - t0:.2f}s")
 
         # Step 2: Parallelize TTS Synthesis and Emotion Detection
-        # This saves time as we don't wait for TTS to finish before checking emotions.
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_tts     = executor.submit(tts.synthesise, reply, language)
-            future_emotion = executor.submit(emotions.detect_emotion, reply)
+            future_emotion = executor.submit(emotions.detect_emotion, reply, llm_emotion)
             
             wav_path = future_tts.result()
             emotion_data = future_emotion.result()
+        
+        t_tts_emo = time.time()
+        print(f"[timer] TTS + Emotion took: {t_tts_emo - t_llm:.2f}s")
 
         # Step 3: Lip-sync analysis (Needs the wav_path from TTS)
         viseme_evts = lipsync.extract_visemes(wav_path)
+        t_lipsync = time.time()
+        print(f"[timer] Lip-sync took: {t_lipsync - t_tts_emo:.2f}s")
 
         with open(wav_path, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode()
         
         pathlib.Path(wav_path).unlink(missing_ok=True)
+
+        print(f"[timer] TOTAL PIPELINE: {time.time() - t0:.2f}s")
 
         return jsonify({
             "transcript": transcript,

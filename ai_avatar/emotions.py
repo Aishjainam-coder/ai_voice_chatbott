@@ -63,12 +63,12 @@ _SURPRISED_KEYWORDS = [
 
 _EMOTION_WEIGHTS: dict[str, dict[str, float]] = {
     "happy": {
-        "mouthSmile":       0.80,
-        "cheekSquintLeft":  0.50,
-        "cheekSquintRight": 0.50,
-        "browInnerUp":      0.20,
-        "eyeWideLeft":      0.10,
-        "eyeWideRight":     0.10,
+        "mouthSmile":       0.95,
+        "cheekSquintLeft":  0.70,
+        "cheekSquintRight": 0.70,
+        "browInnerUp":      0.30,
+        "eyeWideLeft":      0.15,
+        "eyeWideRight":     0.15,
         # reset sad/angry targets
         "mouthFrownLeft":   0.00,
         "mouthFrownRight":  0.00,
@@ -76,11 +76,11 @@ _EMOTION_WEIGHTS: dict[str, dict[str, float]] = {
         "browDownRight":    0.00,
     },
     "sad": {
-        "mouthFrownLeft":   0.70,
-        "mouthFrownRight":  0.70,
-        "browInnerUp":      0.60,
-        "browDownLeft":     0.10,
-        "browDownRight":    0.10,
+        "mouthFrownLeft":   0.90,
+        "mouthFrownRight":  0.90,
+        "browInnerUp":      0.80,
+        "browDownLeft":     0.25,
+        "browDownRight":    0.25,
         # reset happy targets
         "mouthSmile":       0.00,
         "cheekSquintLeft":  0.00,
@@ -129,7 +129,7 @@ _EMOTION_WEIGHTS: dict[str, dict[str, float]] = {
 }
 
 
-def detect_emotion(reply_text: str) -> dict:
+def detect_emotion(reply_text: str, manual_emotion: str | None = None) -> dict:
     """
     Detect the dominant emotion from reply text and return
     the corresponding morph-target weight dict.
@@ -138,6 +138,9 @@ def detect_emotion(reply_text: str) -> dict:
     ----------
     reply_text : str
         The LLM reply string (any language).
+    manual_emotion : str, optional
+        An emotion name provided directly by the LLM (e.g. "happy").
+        If provided and valid, this overrides the keyword scan.
 
     Returns
     -------
@@ -145,22 +148,24 @@ def detect_emotion(reply_text: str) -> dict:
       "emotion"  → detected emotion name (str)
       "weights"  → {morph_target: float, …}
     """
-    text_lower = reply_text.lower()
+    if manual_emotion and manual_emotion.lower() in _EMOTION_WEIGHTS:
+        best_emotion = manual_emotion.lower()
+        print(f"[emotions] Using LLM provided emotion: {best_emotion}")
+    else:
+        text_lower = reply_text.lower()
+        scores = {
+            "happy":     _score(text_lower, _HAPPY_KEYWORDS),
+            "sad":       _score(text_lower, _SAD_KEYWORDS),
+            "angry":     _score(text_lower, _ANGRY_KEYWORDS),
+            "surprised": _score(text_lower, _SURPRISED_KEYWORDS),
+        }
+        best_emotion = max(scores, key=scores.get)
 
-    scores = {
-        "happy":     _score(text_lower, _HAPPY_KEYWORDS),
-        "sad":       _score(text_lower, _SAD_KEYWORDS),
-        "angry":     _score(text_lower, _ANGRY_KEYWORDS),
-        "surprised": _score(text_lower, _SURPRISED_KEYWORDS),
-    }
-
-    best_emotion = max(scores, key=scores.get)
-
-    # Fall back to neutral if nothing matched
-    if scores[best_emotion] == 0:
-        best_emotion = "neutral"
-
-    print(f"[emotions] Detected: {best_emotion}  scores={scores}")
+        # Fall back to neutral if nothing matched
+        if scores[best_emotion] == 0:
+            best_emotion = "neutral"
+        
+        print(f"[emotions] Keyword detected: {best_emotion}  scores={scores}")
 
     return {
         "emotion": best_emotion,

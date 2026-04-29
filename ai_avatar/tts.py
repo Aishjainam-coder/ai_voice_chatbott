@@ -29,6 +29,8 @@ _VOICES = {
     "ur": "ur-PK-UzmaNeural",     # Urdu
 }
 
+import subprocess
+
 def synthesise(text: str, language: str, output_filename: str | None = None) -> str:
     """
     Convert `text` to speech and save to a WAV file.
@@ -37,15 +39,38 @@ def synthesise(text: str, language: str, output_filename: str | None = None) -> 
     
     if output_filename is None:
         output_filename = f"reply_{language}_{os.getpid()}.wav"
-    wav_path = str(_OUTPUT_DIR / output_filename)
+    
+    final_wav = str(_OUTPUT_DIR / output_filename)
+    temp_mp3 = final_wav.replace(".wav", ".mp3")
 
-    print(f"[tts] Synthesising with Edge-TTS ({voice}) -> {wav_path}")
+    print(f"[tts] Synthesising with Edge-TTS ({voice})")
 
     # edge-tts is asynchronous, so we run it in the event loop
-    asyncio.run(_generate_audio(text, voice, wav_path))
+    asyncio.run(_generate_audio(text, voice, temp_mp3))
 
-    print(f"[tts] Written: {wav_path}")
-    return wav_path
+    # Convert MP3 to WAV for lipsync analysis (scipy requirement)
+    print(f"[tts] Converting to WAV: {final_wav}")
+    try:
+        # -y to overwrite, -i for input, then output
+        subprocess.run([
+            "ffmpeg", "-y", "-i", temp_mp3, 
+            "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000", 
+            final_wav
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Cleanup temp MP3
+        if os.path.exists(temp_mp3):
+            os.remove(temp_mp3)
+            
+    except Exception as e:
+        print(f"[tts] FFmpeg Conversion Error: {e}")
+        # If conversion fails, we'll just try to return the MP3 data renamed as wav 
+        # (though this will likely break lipsync, it prevents total crash)
+        if os.path.exists(temp_mp3):
+            os.rename(temp_mp3, final_wav)
+
+    print(f"[tts] Written: {final_wav}")
+    return final_wav
 
 async def _generate_audio(text, voice, output_path):
     communicate = edge_tts.Communicate(text, voice)
