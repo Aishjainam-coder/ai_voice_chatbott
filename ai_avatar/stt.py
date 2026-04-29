@@ -51,9 +51,9 @@ def transcribe(audio_path: str) -> tuple[str, str]:
         result = _model.transcribe(
             audio_path,
             fp16=use_fp16,
-            # task="transcribe" keeps original language
-            # task="translate" would force English output
             task="transcribe",
+            beam_size=1,
+            best_of=1
         )
     except FileNotFoundError as e:
         if "ffmpeg" in str(e).lower() or e.errno == 2:

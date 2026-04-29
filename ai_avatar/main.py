@@ -653,7 +653,10 @@ def text_input():
 
 def _run_pipeline(audio_path: str):
     try:
+        t_start = time.time()
         transcript, language = stt.transcribe(audio_path)
+        print(f"[timer] Transcription took: {time.time() - t_start:.2f}s")
+        
         if not transcript:
             return jsonify({"error": "No speech detected."}), 422
         return _run_pipeline_from_text(transcript, language)
@@ -709,4 +712,4 @@ def _run_pipeline_from_text(transcript: str, language: str):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     print(f"\n  Aishwarya AI Avatar -> http://localhost:{port}\n")
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
