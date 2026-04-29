@@ -18,7 +18,7 @@ import os
 import whisper
 
 # ── Load model once at import time so every request is fast ──
-_MODEL_NAME = os.getenv("STT_MODEL", "medium")
+_MODEL_NAME = os.getenv("STT_MODEL", "tiny")
 print(f"[stt] Loading Whisper model '{_MODEL_NAME}' … (first run downloads ~1.5 GB)")
 _model = whisper.load_model(_MODEL_NAME)
 print(f"[stt] Whisper '{_MODEL_NAME}' ready.")
@@ -45,15 +45,23 @@ def transcribe(audio_path: str) -> tuple[str, str]:
     # fp16=False forces CPU-safe float32; set True only on CUDA
     use_fp16 = False
 
-    # Whisper's transcribe() handles resampling internally via
-    # ffmpeg, so any sample-rate / channel count works.
-    result = _model.transcribe(
-        audio_path,
-        fp16=use_fp16,
-        # task="transcribe" keeps original language
-        # task="translate" would force English output
-        task="transcribe",
-    )
+    try:
+        # Whisper's transcribe() handles resampling internally via
+        # ffmpeg, so any sample-rate / channel count works.
+        result = _model.transcribe(
+            audio_path,
+            fp16=use_fp16,
+            # task="transcribe" keeps original language
+            # task="translate" would force English output
+            task="transcribe",
+        )
+    except FileNotFoundError as e:
+        if "ffmpeg" in str(e).lower() or e.errno == 2:
+            raise RuntimeError(
+                "FFmpeg not found! Please install FFmpeg and add it to your system PATH. "
+                "This is required for recording and audio processing."
+            ) from e
+        raise e
 
     transcript: str = result["text"].strip()
     language: str   = result.get("language", "en")  # ISO code

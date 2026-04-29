@@ -5,7 +5,7 @@ Run:
   python main.py
 """
 
-import os, base64, pathlib
+import os, base64, pathlib, concurrent.futures
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -30,7 +30,7 @@ AVATAR_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>Aisha — AI Avatar</title>
+<title>Aishwarya — AI Avatar</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -55,9 +55,16 @@ body::before{
 
 #app{
   position:relative;z-index:1;
-  width:100%;max-width:480px;
-  display:flex;flex-direction:column;align-items:center;gap:0;
-  height:100vh;
+  width:100%;max-width:1200px;
+  display:grid;grid-template-columns:1fr 400px;
+  gap:0;height:100vh;
+  background:rgba(6,6,16,0.4);
+  backdrop-filter:blur(10px);
+}
+
+@media (max-width: 900px) {
+  #app { grid-template-columns: 1fr; }
+  #chat-container { display: none; }
 }
 
 /* ── Header ── */
@@ -83,23 +90,60 @@ header .tagline{font-size:.75rem;color:var(--sub);margin-left:2px;}
 
 /* ── Face canvas area ── */
 #face-wrap{
-  flex:1;width:100%;position:relative;overflow:hidden;
-  display:flex;align-items:center;justify-content:center;
+  width: 380px; height: 380px;
+  margin: 30px auto;
+  position: relative;
+  overflow: hidden;
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.4), inset 0 0 30px rgba(124,92,252,0.1);
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 0.3s ease;
 }
-#three-canvas{width:100%;height:100%;display:block;}
+#face-wrap:hover { transform: translateY(-5px); border-color: rgba(124,92,252,0.4); }
+#three-canvas{width:100%;height:100%;display:block;border-radius: 30px;}
 
-/* ── Subtitle overlay ── */
-#subtitle{
-  position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
-  max-width:88%;text-align:center;
-  padding:9px 18px;
-  background:rgba(6,6,16,.75);backdrop-filter:blur(14px);
-  border:1px solid rgba(255,255,255,.08);border-radius:28px;
-  font-size:.9rem;line-height:1.55;color:var(--text);
-  opacity:0;transition:opacity .4s;pointer-events:none;
-  white-space:pre-wrap;
+/* ── Chat Container ── */
+#chat-container {
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
 }
-#subtitle.show{opacity:1;}
+#chat-history {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scroll-behavior: smooth;
+}
+.msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 15px;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  animation: fadeIn 0.3s ease-out;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+.msg.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: white;
+  border-bottom-right-radius: 2px;
+}
+.msg.aishwarya {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  border-bottom-left-radius: 2px;
+}
+#transcript-badge, #subtitle { display: none; }
 
 /* ── Transcript badge ── */
 #transcript-badge{
@@ -197,31 +241,35 @@ header .tagline{font-size:.75rem;color:var(--sub);margin-left:2px;}
 </head>
 <body>
 <div id="app">
-  <header>
-    <div class="logo-ring">✨</div>
-    <h1>Aisha</h1>
-    <span class="tagline">AI Avatar</span>
-    <div class="status-dot" id="status-dot"></div>
-  </header>
+  <div id="left-pane" style="display:flex; flex-direction:column; height:100vh; overflow:hidden;">
+    <header>
+      <div class="logo-ring">✨</div>
+      <h1>Aishwarya</h1>
+      <span class="tagline">AI Avatar v1.1</span>
+      <div class="status-dot" id="status-dot"></div>
+      <div id="emotion-badge">Neutral 😌</div>
+    </header>
 
-  <div id="face-wrap">
-    <canvas id="three-canvas"></canvas>
-    <div id="transcript-badge"></div>
-    <div id="subtitle"></div>
-    <div id="emotion-badge">Neutral 😌</div>
+    <div id="face-wrap">
+      <canvas id="three-canvas"></canvas>
+    </div>
+
+    <div id="bottom">
+      <div id="text-row">
+        <input id="text-input" type="text"
+          placeholder="Type a message… (Hindi / English / Hinglish)" autocomplete="off"/>
+        <button id="send-btn">Send ↗</button>
+      </div>
+      <div id="mic-row">
+        <span class="mic-hint">Click to talk</span>
+        <button id="mic-btn" title="Click to record / stop">🎤</button>
+        <div id="proc-ring"></div>
+      </div>
+    </div>
   </div>
 
-  <div id="bottom">
-    <div id="text-row">
-      <input id="text-input" type="text"
-        placeholder="Type a message… (Hindi / English / Hinglish)" autocomplete="off"/>
-      <button id="send-btn">Send ↗</button>
-    </div>
-    <div id="mic-row">
-      <span class="mic-hint">Click to talk</span>
-      <button id="mic-btn" title="Click to record / stop">🎤</button>
-      <div id="proc-ring"></div>
-    </div>
+  <div id="chat-container">
+    <div id="chat-history"></div>
   </div>
 </div>
 <div id="toast"></div>
@@ -247,29 +295,29 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 
 const scene  = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(28, 1, 0.1, 100);
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
 
-// Face-only framing: tight crop on head
-camera.position.set(0, 1.65, 1.5);
+// Perfect Portrait Framing: Full head and shoulders, matched to reference
+camera.position.set(0, 1.58, 1.15); 
 camera.lookAt(0, 1.62, 0);
 
 function onResize(){
-  const wrap = canvas.parentElement;
-  const w = wrap.clientWidth, h = wrap.clientHeight;
+  const w = 380, h = 380; // Fixed square size
   renderer.setSize(w, h);
-  camera.aspect = w / h;
+  camera.aspect = 1; // Square aspect
   camera.updateProjectionMatrix();
 }
 onResize();
+// No need for ResizeObserver on fixed size container but keeping it safe
 new ResizeObserver(onResize).observe(canvas.parentElement);
 
-// ── Lighting ──────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-const key = new THREE.DirectionalLight(0xfff5e0, 1.4);
+// ── Lighting (Brighter/Whiter) ────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+const key = new THREE.DirectionalLight(0xffffff, 1.6);
 key.position.set(1.5, 3, 2.5); key.castShadow=true; scene.add(key);
-const fill = new THREE.DirectionalLight(0xb0a0ff, 0.45);
+const fill = new THREE.DirectionalLight(0xffffff, 0.7);
 fill.position.set(-2, 1.5, 1); scene.add(fill);
-const rim = new THREE.DirectionalLight(0x7060ff, 0.4);
+const rim = new THREE.DirectionalLight(0xffffff, 0.5);
 rim.position.set(0, 2, -3); scene.add(rim);
 
 // ── Avatar load ────────────────────────────────────────────────
@@ -279,6 +327,10 @@ loader.load('/static/avatar.glb', gltf=>{
   avatar = gltf.scene;
   scene.add(avatar);
   avatar.traverse(o=>{
+    // Hide teeth meshes if they exist
+    if (o.isMesh && (o.name.toLowerCase().includes('teeth') || o.name.toLowerCase().includes('tooth'))) {
+      o.visible = false;
+    }
     if(o.isMesh && o.morphTargetDictionary &&
        Object.keys(o.morphTargetDictionary).length > 0){
       if(!morphMesh || Object.keys(o.morphTargetDictionary).length > Object.keys(morphDict).length){
@@ -348,11 +400,11 @@ function lipsyncUpdate(){
   const elapsed = (performance.now() - visStart)/1000;
   const active = {};
   for(const ev of visQ)
-    if(elapsed >= ev.t && elapsed < ev.t+ev.dur) active[ev.vis]=1;
+    if(elapsed >= ev.t && elapsed < ev.t+ev.dur) active[ev.vis] = ev.weight || 1;
   for(const m of LIP_MORPHS){
     const i=morphDict[m]; if(i===undefined) continue;
     const target = active[m]||0;
-    morphMesh.morphTargetInfluences[i] = morphMesh.morphTargetInfluences[i]*0.65 + target*0.35;
+    morphMesh.morphTargetInfluences[i] = morphMesh.morphTargetInfluences[i]*0.4 + target*0.6;
   }
   if(visQ.length){
     const last=visQ[visQ.length-1];
@@ -458,10 +510,20 @@ async function sendText(){
 }
 
 // ── Handle server reply ───────────────────────────────────────
+function addChatMessage(role, text) {
+  const history = document.getElementById('chat-history');
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  history.appendChild(div);
+  history.scrollTop = history.scrollHeight;
+}
+
 function handleReply(data){
   if(data.error){showToast(data.error);return;}
-  if(data.transcript) showTranscript(data.transcript);
-  showSubtitle(data.reply||'');
+  if(data.transcript) addChatMessage('user', data.transcript);
+  if(data.reply) addChatMessage('aishwarya', data.reply);
+  
   if(data.emotion){
     eTarget = {...(data.weights||{})};
     document.getElementById('emotion-badge').textContent =
@@ -564,20 +626,33 @@ def _run_pipeline(audio_path: str):
 
 def _run_pipeline_from_text(transcript: str, language: str):
     try:
-        reply       = llm.generate_reply(transcript, language)
-        wav_path    = tts.synthesise(reply, language)
+        # Step 1: LLM Generation (Synchronous - we need the full text for TTS and Emotions)
+        reply = llm.generate_reply(transcript, language)
+
+        # Step 2: Parallelize TTS Synthesis and Emotion Detection
+        # This saves time as we don't wait for TTS to finish before checking emotions.
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_tts     = executor.submit(tts.synthesise, reply, language)
+            future_emotion = executor.submit(emotions.detect_emotion, reply)
+            
+            wav_path = future_tts.result()
+            emotion_data = future_emotion.result()
+
+        # Step 3: Lip-sync analysis (Needs the wav_path from TTS)
         viseme_evts = lipsync.extract_visemes(wav_path)
-        emotion     = emotions.detect_emotion(reply)
+
         with open(wav_path, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode()
+        
         pathlib.Path(wav_path).unlink(missing_ok=True)
+
         return jsonify({
             "transcript": transcript,
             "reply":      reply,
             "audio_base64": audio_b64,
             "visemes":    viseme_evts,
-            "emotion":    emotion["emotion"],
-            "weights":    emotion["weights"],
+            "emotion":    emotion_data["emotion"],
+            "weights":    emotion_data["weights"],
         })
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -585,5 +660,5 @@ def _run_pipeline_from_text(transcript: str, language: str):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    print(f"\n  Aisha AI Avatar -> http://localhost:{port}\n")
+    print(f"\n  Aishwarya AI Avatar -> http://localhost:{port}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)

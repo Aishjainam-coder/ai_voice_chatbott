@@ -68,7 +68,15 @@ def extract_visemes(wav_path: str) -> list[dict]:
           dur (float) — duration in seconds (how long to hold)
     """
     # ── Load audio ────────────────────────────────────────────
-    y, sr = librosa.load(wav_path, sr=_SR_TARGET, mono=True)
+    try:
+        y, sr = librosa.load(wav_path, sr=_SR_TARGET, mono=True)
+    except FileNotFoundError as e:
+        if "ffmpeg" in str(e).lower() or e.errno == 2:
+            raise RuntimeError(
+                "FFmpeg not found! Librosa requires FFmpeg to process this audio. "
+                "Please install FFmpeg and add it to your system PATH."
+            ) from e
+        raise e
     duration = librosa.get_duration(y=y, sr=sr)
     print(f"[lipsync] Loaded {wav_path!r}  duration={duration:.2f}s  sr={sr}")
 
@@ -108,8 +116,15 @@ def extract_visemes(wav_path: str) -> list[dict]:
         # ── Merge consecutive identical visemes ───────────────
         if events and events[-1]["vis"] == vis:
             events[-1]["dur"] = round(events[-1]["dur"] + frame_dur, 4)
+            # Take the max RMS for the merged segment
+            events[-1]["weight"] = max(events[-1].get("weight", 0), round(float(rms_norm[i]), 2))
         else:
-            events.append({"t": round(t, 4), "vis": vis, "dur": round(frame_dur, 4)})
+            events.append({
+                "t": round(t, 4), 
+                "vis": vis, 
+                "dur": round(frame_dur, 4),
+                "weight": round(float(rms_norm[i]), 2)
+            })
 
     # ── Add jawOpen events alongside vowel visemes ────────────
     events = _inject_jaw_open(events)
@@ -172,7 +187,8 @@ def _inject_jaw_open(events: list[dict]) -> list[dict]:
             extra.append({
                 "t":   ev["t"],
                 "vis": "jawOpen",
-                "dur": ev["dur"] * 0.8,   # slightly shorter than vowel
+                "dur": ev["dur"] * 0.8,
+                "weight": ev.get("weight", 1.0)
             })
     combined = events + extra
     # Sort by time so the frontend can iterate in order

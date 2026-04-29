@@ -3,7 +3,7 @@ llm.py — AI Brain using Ollama + LLaMA 3
 =========================================
 Responsibilities:
   - Accept user message text + detected language code
-  - Build a system prompt that instructs Aisha to reply
+  - Build a system prompt that instructs Aishwarya to reply
     in the SAME language the user spoke in
   - Stream the reply from the locally running Ollama server
   - Return the full reply string
@@ -19,9 +19,9 @@ import ollama
 # ── Model name — override via env if you want a different one ─
 _MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 
-# ── Aisha's personality / language-matching system prompt ─────
+# ── Aishwarya's personality / language-matching system prompt ─────
 _SYSTEM_PROMPT = (
-    "You are Aisha, a friendly and helpful AI assistant with a warm personality. "
+    "You are Aishwarya, a friendly and helpful AI assistant with a warm personality. "
     "Rules you MUST follow:\n"
     "1. Always reply in the EXACT same language the user used. "
     "   If they write in Hindi, reply in Hindi. "
@@ -37,7 +37,7 @@ _SYSTEM_PROMPT = (
 
 def generate_reply(user_message: str, language: str) -> str:
     """
-    Generate a contextual reply from Aisha (LLaMA 3 via Ollama).
+    Generate a contextual reply from Aishwarya (LLaMA 3.2 via Ollama).
 
     Parameters
     ----------
@@ -51,7 +51,7 @@ def generate_reply(user_message: str, language: str) -> str:
     Returns
     -------
     reply : str
-        Aisha's reply text (same language as user input).
+        Aishwarya's reply text (same language as user input).
     """
     # ── Language hint appended to the user message ────────────
     # This nudges the model even if the system prompt is
@@ -69,9 +69,10 @@ def generate_reply(user_message: str, language: str) -> str:
                 {"role": "user",      "content": augmented_message},
             ],
             options={
-                "temperature": 0.75,
+                "temperature": 0.7,
                 "top_p":       0.9,
-                "num_predict": 200,
+                "num_predict": 100,  # Lower for faster response
+                "num_thread":  8,    # Use more CPU cores for speed
             },
         )
         reply: str = response["message"]["content"].strip()
@@ -84,7 +85,7 @@ def generate_reply(user_message: str, language: str) -> str:
             f"then pull the model with 'ollama pull {_MODEL}'."
         )
 
-    print(f"[llm] Aisha reply: {reply[:120]!r}")
+    print(f"[llm] Aishwarya reply: {reply[:120]!r}")
     return reply
 
 
