@@ -58,7 +58,7 @@ def generate_reply(user_message: str, language: str) -> tuple[str, str]:
             options={
                 "temperature": 0.6,
                 "num_predict": 80,
-                "num_thread":  8,
+                "num_thread":  4,
                 "top_k": 20,
                 "top_p": 0.9,
             },

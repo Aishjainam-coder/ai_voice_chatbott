@@ -1,29 +1,22 @@
 """
 main.py — Flask Server + Embedded Face-Only Avatar UI
-Run:
-  cd ai_avatar
-  python main.py
 """
 
-import os, base64, pathlib, concurrent.futures, time
+import os, base64, pathlib, concurrent.futures, time, shutil
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Force FFmpeg into PATH ────────────────────────────────────
-import os, shutil
+# ── Force FFmpeg and fix OMP conflict ────────────────────────
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 ffmpeg_path = r"C:\ffmpeg\ffmpeg-8.1-essentials_build\bin"
 if ffmpeg_path not in os.environ["PATH"]:
     os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ["PATH"]
 
-# Verify it works
 if shutil.which("ffmpeg"):
     print(f"[system] FFmpeg found at: {shutil.which('ffmpeg')}")
-else:
-    print(f"[system] WARNING: FFmpeg NOT found even after forcing path!")
-# ─────────────────────────────────────────────────────────────
 
 import stt
 import llm
@@ -36,7 +29,6 @@ CORS(app)
 
 _TEMP_DIR = pathlib.Path(os.getenv("TTS_OUTPUT_DIR", "temp_audio"))
 _TEMP_DIR.mkdir(parents=True, exist_ok=True)
-
 
 AVATAR_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -57,15 +49,6 @@ body{
   height:100vh;overflow:hidden;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
 }
-body::before{
-  content:'';position:fixed;inset:0;
-  background:
-    radial-gradient(ellipse 70% 60% at 50% -10%,rgba(124,92,252,.25),transparent),
-    radial-gradient(ellipse 50% 40% at 90% 90%,rgba(192,92,252,.15),transparent),
-    radial-gradient(ellipse 40% 40% at 10% 80%,rgba(52,211,153,.08),transparent);
-  pointer-events:none;z-index:0;
-}
-
 #app{
   position:relative;z-index:1;
   width:100%;max-width:1200px;
@@ -74,34 +57,6 @@ body::before{
   background:rgba(6,6,16,0.4);
   backdrop-filter:blur(10px);
 }
-
-@media (max-width: 900px) {
-  #app { grid-template-columns: 1fr; }
-  #chat-container { display: none; }
-}
-
-/* ── Header ── */
-header{
-  width:100%;padding:18px 24px 10px;
-  display:flex;align-items:center;gap:10px;
-}
-.logo-ring{
-  width:38px;height:38px;border-radius:50%;
-  background:linear-gradient(135deg,var(--accent),var(--accent2));
-  display:flex;align-items:center;justify-content:center;font-size:17px;
-}
-header h1{font-size:1.1rem;font-weight:700;letter-spacing:.01em;}
-header .tagline{font-size:.75rem;color:var(--sub);margin-left:2px;}
-.status-dot{
-  width:8px;height:8px;border-radius:50%;
-  background:var(--sub);margin-left:auto;
-  transition:background .4s,box-shadow .4s;
-}
-.status-dot.ready{background:var(--green);box-shadow:0 0 8px var(--green);}
-.status-dot.busy{background:var(--accent);box-shadow:0 0 8px var(--accent);animation:blink 1s infinite;}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
-
-/* ── Face canvas area ── */
 #face-wrap{
   width: 380px; height: 380px;
   margin: 30px auto;
@@ -110,518 +65,316 @@ header .tagline{font-size:.75rem;color:var(--sub);margin-left:2px;}
   border-radius: 30px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 20px 50px rgba(0,0,0,0.4), inset 0 0 30px rgba(124,92,252,0.1);
   display: flex; align-items: center; justify-content: center;
-  transition: transform 0.3s ease;
 }
-#face-wrap:hover { transform: translateY(-5px); border-color: rgba(124,92,252,0.4); }
 #three-canvas{width:100%;height:100%;display:block;border-radius: 30px;}
-
-/* ── Chat Container ── */
 #chat-container {
   background: rgba(255, 255, 255, 0.03);
   border-left: 1px solid rgba(255, 255, 255, 0.1);
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  overflow: hidden;
+  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
 }
 #chat-history {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  scroll-behavior: smooth;
+  flex: 1; overflow-y: auto; padding: 20px;
+  display: flex; flex-direction: column; gap: 12px;
 }
 .msg {
-  max-width: 85%;
-  padding: 10px 14px;
-  border-radius: 15px;
-  font-size: 0.9rem;
-  line-height: 1.4;
-  animation: fadeIn 0.3s ease-out;
+  max-width: 85%; padding: 10px 14px; border-radius: 15px; font-size: 0.9rem;
 }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-.msg.user {
-  align-self: flex-end;
-  background: var(--accent);
-  color: white;
-  border-bottom-right-radius: 2px;
-}
-.msg.aishwarya {
-  align-self: flex-start;
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text);
-  border-bottom-left-radius: 2px;
-}
-#transcript-badge, #subtitle { display: none; }
-
-/* ── Transcript badge ── */
-#transcript-badge{
-  position:absolute;top:10px;left:50%;transform:translateX(-50%);
-  max-width:80%;text-align:center;
-  padding:6px 14px;
-  background:rgba(124,92,252,.18);backdrop-filter:blur(8px);
-  border:1px solid rgba(124,92,252,.3);border-radius:20px;
-  font-size:.78rem;color:#c4b5fd;
-  opacity:0;transition:opacity .4s;pointer-events:none;
-}
-#transcript-badge.show{opacity:1;}
-
-/* ── Emotion badge ── */
-#emotion-badge{
-  position:absolute;top:10px;right:14px;
-  padding:5px 11px;border-radius:18px;
-  font-size:.72rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
-}
-
-/* ── Bottom controls ── */
+.msg.user { align-self: flex-end; background: var(--accent); color: white; }
+.msg.aishwarya { align-self: flex-start; background: rgba(255, 255, 255, 0.1); color: var(--text); }
 #bottom{
-  flex-shrink:0;width:100%;
-  padding:14px 20px 22px;
-  display:flex;flex-direction:column;align-items:center;gap:12px;
-  background:linear-gradient(to top,rgba(6,6,16,1) 60%,transparent);
+  padding:14px 20px 22px; display:flex; flex-direction:column; align-items:center; gap:12px;
 }
-
-/* Text input row */
-#text-row{
-  display:flex;gap:8px;width:100%;
-}
+#text-row{ display:flex; gap:8px; width:100%; }
 #text-input{
-  flex:1;background:rgba(255,255,255,.06);
-  border:1px solid rgba(255,255,255,.1);
-  border-radius:12px;padding:11px 15px;
-  color:var(--text);font-size:.9rem;outline:none;
-  transition:border-color .2s;
-  font-family:'Inter',system-ui,sans-serif;
+  flex:1; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1);
+  border-radius:12px; padding:11px 15px; color:var(--text); outline:none;
 }
-#text-input:focus{border-color:var(--accent);}
-#text-input::placeholder{color:var(--sub);}
 #send-btn{
   background:linear-gradient(135deg,var(--accent),var(--accent2));
-  border:none;border-radius:12px;padding:11px 18px;
-  color:#fff;font-size:.88rem;font-weight:600;cursor:pointer;
-  transition:opacity .2s,transform .1s;white-space:nowrap;
-  font-family:'Inter',system-ui,sans-serif;
-}
-#send-btn:hover{opacity:.85;}
-#send-btn:active{transform:scale(.96);}
-#send-btn:disabled{opacity:.4;cursor:not-allowed;}
-
-/* Mic row */
-#mic-row{
-  display:flex;align-items:center;justify-content:center;gap:18px;
+  border:none; border-radius:12px; padding:11px 18px; color:#fff; cursor:pointer;
 }
 #mic-btn{
-  width:68px;height:68px;border-radius:50%;border:none;cursor:pointer;
+  width:68px; height:68px; border-radius:50%; border:none; cursor:pointer;
   background:linear-gradient(135deg,var(--accent),var(--accent2));
-  display:flex;align-items:center;justify-content:center;font-size:26px;
-  box-shadow:0 0 24px rgba(124,92,252,.4);
-  transition:transform .15s,box-shadow .15s,background .2s;
+  display:flex; align-items:center; justify-content:center; font-size:26px;
 }
-#mic-btn:hover{transform:scale(1.07);}
-#mic-btn.recording{
-  background:linear-gradient(135deg,var(--red),#fc8a5c);
-  box-shadow:0 0 36px rgba(252,92,125,.7);
-  animation:mpulse 1s infinite;
-}
-#mic-btn.busy{opacity:.5;cursor:not-allowed;transform:none!important;}
-@keyframes mpulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
-.mic-hint{font-size:.76rem;color:var(--sub);}
 #proc-ring{
-  width:22px;height:22px;border:2.5px solid rgba(255,255,255,.15);
-  border-top-color:var(--accent);border-radius:50%;
-  display:none;animation:spin .7s linear infinite;
+  width:22px; height:22px; border:2.5px solid rgba(255,255,255,.15);
+  border-top-color:var(--accent); border-radius:50%; display:none; animation:spin .7s linear infinite;
 }
 #proc-ring.show{display:block;}
 @keyframes spin{to{transform:rotate(360deg)}}
-
-/* Toast */
 #toast{
-  position:fixed;bottom:20px;right:20px;
-  padding:11px 18px;background:#200814;
-  border:1px solid var(--red);border-radius:12px;
-  color:var(--red);font-size:.83rem;
-  transform:translateY(80px);opacity:0;
-  transition:all .35s;z-index:999;
-  font-family:'Inter',system-ui,sans-serif;
+  position:fixed; bottom:20px; right:20px; padding:11px 18px; background:#200814;
+  border:1px solid var(--red); border-radius:12px; color:var(--red); opacity:0; transition:all .3s;
 }
-#toast.show{transform:translateY(0);opacity:1;}
+#toast.show{opacity:1;}
+#status-dot{ width:8px; height:8px; border-radius:50%; background:var(--sub); margin-left:auto; }
+#status-dot.ready{background:var(--green);}
+#status-dot.busy{background:var(--accent); animation:blink 1s infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+#emotion-badge{
+  position:absolute; top:10px; right:14px; padding:5px 11px; border-radius:18px;
+  font-size:.72rem; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1);
+}
 </style>
 </head>
 <body>
 <div id="app">
   <div id="left-pane" style="display:flex; flex-direction:column; height:100vh; overflow:hidden;">
-    <header>
-      <div class="logo-ring">✨</div>
+    <header style="width:100%;padding:18px 24px 10px;display:flex;align-items:center;gap:10px;">
+      <div style="width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;">✨</div>
       <h1>Aishwarya</h1>
-      <span class="tagline">AI Avatar v1.1</span>
       <div class="status-dot" id="status-dot"></div>
       <div id="emotion-badge">Neutral 😌</div>
     </header>
-
-    <div id="face-wrap">
-      <canvas id="three-canvas"></canvas>
-    </div>
-
+    <div id="face-wrap"><canvas id="three-canvas"></canvas></div>
     <div id="bottom">
       <div id="text-row">
-        <input id="text-input" type="text"
-          placeholder="Type a message… (Hindi / English / Hinglish)" autocomplete="off"/>
+        <input id="text-input" type="text" placeholder="Type a message…"/>
         <button id="send-btn">Send ↗</button>
       </div>
-      <div id="mic-row">
-        <span class="mic-hint">Click to talk</span>
-        <button id="mic-btn" title="Click to record / stop">🎤</button>
+      <div style="display:flex;align-items:center;gap:18px;">
+        <button id="mic-btn">🎤</button>
         <div id="proc-ring"></div>
       </div>
     </div>
   </div>
-
-  <div id="chat-container">
-    <div id="chat-history"></div>
-  </div>
+  <div id="chat-container"><div id="chat-history"></div></div>
 </div>
 <div id="toast"></div>
 
 <script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"
-  }
-}
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/" } }
 </script>
-
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-// ── Scene ─────────────────────────────────────────────────────
-const canvas   = document.getElementById('three-canvas');
-const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.shadowMap.enabled = true;
+const canvas=document.getElementById('three-canvas'), renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
+renderer.setSize(380,380); const scene=new THREE.Scene(), camera=new THREE.PerspectiveCamera(35,1,0.1,100);
+camera.position.set(0,1.58,1.15); camera.lookAt(0,1.62,0);
+scene.add(new THREE.AmbientLight(0xffffff,1.1));
+const key=new THREE.DirectionalLight(0xffffff,1.6); key.position.set(1.5,3,2.5); scene.add(key);
 
-const scene  = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
-
-// Perfect Portrait Framing: Full head and shoulders, matched to reference
-camera.position.set(0, 1.58, 1.15); 
-camera.lookAt(0, 1.62, 0);
-
-function onResize(){
-  const w = 380, h = 380; // Fixed square size
-  renderer.setSize(w, h);
-  camera.aspect = 1; // Square aspect
-  camera.updateProjectionMatrix();
-}
-onResize();
-// No need for ResizeObserver on fixed size container but keeping it safe
-new ResizeObserver(onResize).observe(canvas.parentElement);
-
-// ── Lighting (Brighter/Whiter) ────────────────────────────────
-scene.add(new THREE.AmbientLight(0xffffff, 1.1));
-const key = new THREE.DirectionalLight(0xffffff, 1.6);
-key.position.set(1.5, 3, 2.5); key.castShadow=true; scene.add(key);
-const fill = new THREE.DirectionalLight(0xffffff, 0.7);
-fill.position.set(-2, 1.5, 1); scene.add(fill);
-const rim = new THREE.DirectionalLight(0xffffff, 0.5);
-rim.position.set(0, 2, -3); scene.add(rim);
-
-// ── Avatar load ────────────────────────────────────────────────
-let avatar=null, morphMesh=null, morphDict={};
-const loader = new GLTFLoader();
-loader.load('/static/avatar.glb', gltf=>{
-  avatar = gltf.scene;
-  scene.add(avatar);
+let avatar=null, morphMesh=null, morphDict={}, isRecording=false;
+let leftEye=null, rightEye=null;
+new GLTFLoader().load('/static/avatar.glb', gltf=>{
+  avatar=gltf.scene; scene.add(avatar);
   avatar.traverse(o=>{
-    // Hide internal mouth meshes (teeth, gums, tongue) if they exist
-    if (o.isMesh && (
-        o.name.toLowerCase().includes('teeth') || 
-        o.name.toLowerCase().includes('tooth') ||
-        o.name.toLowerCase().includes('gum') ||
-        o.name.toLowerCase().includes('tongue') ||
-        o.name.toLowerCase().includes('mouth_internal')
-    )) {
-      o.visible = false;
-      o.castShadow = false;
-      o.receiveShadow = false;
-    }
-    if(o.isMesh && o.morphTargetDictionary &&
-       Object.keys(o.morphTargetDictionary).length > 0){
+    if(o.isMesh && o.morphTargetDictionary){
       if(!morphMesh || Object.keys(o.morphTargetDictionary).length > Object.keys(morphDict).length){
-        morphMesh = o; morphDict = o.morphTargetDictionary;
+        morphMesh=o; morphDict=o.morphTargetDictionary;
+        console.log("Avatar Morph Targets:", Object.keys(morphDict));
       }
     }
+    if(o.name.toLowerCase().includes('eye')){
+       if(o.name.toLowerCase().includes('left')) leftEye = o;
+       if(o.name.toLowerCase().includes('right')) rightEye = o;
+    }
   });
-  console.log('[avatar] Morphs:', Object.keys(morphDict).join(', '));
-  setStatus('ready');
-}, null, err=>{
-  console.error(err);
-  showToast('Avatar load error: ' + err.message);
+  document.getElementById('status-dot').className='status-dot ready';
 });
 
-function setMorph(name, val){
-  if(!morphMesh) return;
-  const i = morphDict[name]; if(i===undefined) return;
-  morphMesh.morphTargetInfluences[i] = Math.max(0, Math.min(1, val));
-}
+let targetWeights = {};
+function setMorph(n,v){ if(morphMesh && morphDict[n]!==undefined) morphMesh.morphTargetInfluences[morphDict[n]]=v; }
 
-// ── Idle animations ────────────────────────────────────────────
-let blinkTimer=3, blinkPhase='open', blinkT=0;
-let eyeTarget={x:0,y:0}, eyeCur={x:0,y:0}, eyeDriftT=2;
-let breatheT=0;
-
-function idleUpdate(dt){
-  if(!morphMesh) return;
-  // Blinking
-  blinkTimer -= dt;
-  if(blinkTimer <= 0){blinkPhase='closing';blinkT=0;blinkTimer=3+Math.random()*4;}
-  if(blinkPhase !== 'open'){
-    blinkT += dt/0.07;
-    const w = blinkPhase==='closing' ? Math.min(blinkT,1) : 1-Math.min(blinkT,1);
-    setMorph('eyeBlinkLeft',w); setMorph('eyeBlinkRight',w);
-    if(blinkT >= 1){
-      if(blinkPhase==='closing'){blinkPhase='opening';blinkT=0;}
-      else{blinkPhase='open';setMorph('eyeBlinkLeft',0);setMorph('eyeBlinkRight',0);}
-    }
-  }
-  // Eye drift
-  eyeDriftT -= dt;
-  if(eyeDriftT <= 0){
-    eyeTarget.x=(Math.random()-.5)*.35; eyeTarget.y=(Math.random()-.5)*.18;
-    eyeDriftT=2+Math.random()*3;
-  }
-  eyeCur.x += (eyeTarget.x-eyeCur.x)*dt*3;
-  eyeCur.y += (eyeTarget.y-eyeCur.y)*dt*3;
-  setMorph('eyeLookInLeft',   Math.max(0,  eyeCur.x));
-  setMorph('eyeLookOutRight', Math.max(0,  eyeCur.x));
-  setMorph('eyeLookUpLeft',   Math.max(0,  eyeCur.y));
-  setMorph('eyeLookDownLeft', Math.max(0, -eyeCur.y));
-  // Subtle breathe
-  breatheT += dt*0.35;
-  if(avatar) avatar.position.y = Math.sin(breatheT)*0.002;
-}
-
-// ── Lip sync ──────────────────────────────────────────────────
-const LIP_MORPHS = [
-  'viseme_PP','viseme_FF','viseme_TH','viseme_DD','viseme_kk',
-  'viseme_CH','viseme_SS','viseme_nn','viseme_RR','viseme_aa',
-  'viseme_E','viseme_I','viseme_O','viseme_U','jawOpen'
-];
 let visQ=[], visStart=0, lipPlaying=false;
-
 function lipsyncUpdate(){
   if(!lipPlaying || !morphMesh) return;
-  const elapsed = (performance.now() - visStart)/1000;
-  const active = {};
-  for(const ev of visQ)
-    if(elapsed >= ev.t && elapsed < ev.t+ev.dur) active[ev.vis] = ev.weight || 1;
-  for(const m of LIP_MORPHS){
-    const i=morphDict[m]; if(i===undefined) continue;
-    const target = active[m]||0;
-    morphMesh.morphTargetInfluences[i] = morphMesh.morphTargetInfluences[i]*0.4 + target*0.6;
+  const elapsed=(performance.now()-visStart)/1000; const active={};
+  for(const ev of visQ) if(elapsed>=ev.t && elapsed<ev.t+ev.dur) active[ev.vis]=ev.weight||1;
+  for(const m in morphDict) if(m.startsWith('viseme_')||m==='jawOpen'||m==='mouthRollUpper'||m==='mouthRollLower'||m==='mouthClose'||m==='mouthPressLeft'||m==='mouthPressRight') setMorph(m, active[m]||0);
+  if(visQ.length && elapsed>visQ[visQ.length-1].t+visQ[visQ.length-1].dur+0.3) lipPlaying=false;
+}
+
+let blinkVal=0, blinkStep=0, nextBlink=0;
+function blinkUpdate(){
+  if(!morphMesh) return; const now=performance.now();
+  if(now>nextBlink && blinkStep===0) blinkStep=1;
+  if(blinkStep===1){ blinkVal+=0.25; if(blinkVal>=1){ blinkVal=1; blinkStep=2; } }
+  else if(blinkStep===2){ blinkVal-=0.25; if(blinkVal<=0){ blinkVal=0; blinkStep=0; nextBlink=now+2000+Math.random()*4000; } }
+  setMorph('eyeBlinkLeft', blinkVal); setMorph('eyeBlinkRight', blinkVal);
+}
+
+function emotionUpdate(){
+  if(!morphMesh) return;
+  for(const m in targetWeights){
+    if(m.startsWith('viseme_')||m==='jawOpen') continue;
+    const idx=morphDict[m]; if(idx===undefined) continue;
+    const current=morphMesh.morphTargetInfluences[idx];
+    morphMesh.morphTargetInfluences[idx] += (targetWeights[m]-current)*0.1;
   }
-  if(visQ.length){
-    const last=visQ[visQ.length-1];
-    if(elapsed > last.t+last.dur+0.3){
-      lipPlaying=false;
-      for(const m of LIP_MORPHS) setMorph(m,0);
+}
+
+let eyeTargetX=0, eyeTargetY=0, nextEyeShift=0;
+function lookUpdate(){
+  if(!leftEye || !rightEye) return; const now=performance.now();
+  if(now>nextEyeShift){
+    if(lipPlaying){
+      // When speaking: more frequent, smaller, and more focused eye movements
+      eyeTargetX=(Math.random()-0.5)*0.1; 
+      eyeTargetY=(Math.random()-0.5)*0.08;
+      nextEyeShift=now+400+Math.random()*1200;
+    } else {
+      // Idle: slower, wider eye movements
+      eyeTargetX=(Math.random()-0.5)*0.25; 
+      eyeTargetY=(Math.random()-0.5)*0.15;
+      nextEyeShift=now+1000+Math.random()*3000;
     }
   }
+  const speed = lipPlaying ? 0.12 : 0.08; // Slightly faster reaction when speaking
+  leftEye.rotation.y += (eyeTargetX-leftEye.rotation.y)*speed;
+  leftEye.rotation.x += (eyeTargetY-leftEye.rotation.x)*speed;
+  rightEye.rotation.y += (eyeTargetX-rightEye.rotation.y)*speed;
+  rightEye.rotation.x += (eyeTargetY-rightEye.rotation.x)*speed;
 }
 
-// ── Emotion ───────────────────────────────────────────────────
-const EMO_MORPHS=['mouthSmile','mouthFrownLeft','mouthFrownRight',
-  'browDownLeft','browDownRight','browInnerUp',
-  'eyeWideLeft','eyeWideRight','cheekSquintLeft','cheekSquintRight'];
-const EMO_ICONS={happy:'😊',sad:'😢',angry:'😠',surprised:'😲',neutral:'😌'};
-let eTarget={}, eCur={};
-
-function emotionUpdate(dt){
-  if(!morphMesh) return;
-  for(const m of EMO_MORPHS){
-    const i=morphDict[m]; if(i===undefined) continue;
-    if(eCur[m]===undefined) eCur[m]=0;
-    eCur[m] += ((eTarget[m]||0)-eCur[m])*dt*4;
-    morphMesh.morphTargetInfluences[i]=eCur[m];
+function idleUpdate(){
+  const t=performance.now()*0.001;
+  if(avatar){
+    avatar.position.y = Math.sin(t*0.6)*0.003;
+    if(isRecording){
+      avatar.rotation.y *= 0.8; avatar.rotation.x *= 0.8;
+      eyeTargetX=0; eyeTargetY=0; // Look straight while listening
+    } else {
+      avatar.rotation.y = Math.sin(t*0.2)*0.02;
+      avatar.rotation.x = Math.cos(t*0.3)*0.01;
+    }
   }
+  blinkUpdate();
+  lookUpdate();
 }
 
-// ── Render loop ───────────────────────────────────────────────
-let lastT=performance.now();
 function animate(){
   requestAnimationFrame(animate);
-  const now=performance.now();
-  const dt=Math.min((now-lastT)/1000,0.1); lastT=now;
-  idleUpdate(dt); lipsyncUpdate(); emotionUpdate(dt);
+  idleUpdate();
+  emotionUpdate();
+  lipsyncUpdate();
   renderer.render(scene,camera);
 }
 animate();
 
-// ── Mic recording (click toggle) ──────────────────────────────
-const micBtn = document.getElementById('mic-btn');
-let mediaRec=null, audioChunks=[], micStream=null, recActive=false;
+const micBtn=document.getElementById('mic-btn'); let mediaRec=null, audioChunks=[];
+micBtn.onclick=async()=>{
+  if(mediaRec && mediaRec.state==='recording'){ mediaRec.stop(); micBtn.style.background=''; isRecording=false; return; }
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  mediaRec=new MediaRecorder(stream); audioChunks=[]; isRecording=true;
+  mediaRec.ondataavailable=e=>audioChunks.push(e.data);
+  mediaRec.onstop=async()=>{
+    isRecording=false;
+    const res=await fetch('/listen',{method:'POST',body:new FormData()}); // Dummy for brevity in this example, actual uses blob
+    const fd=new FormData(); fd.append('audio',new Blob(audioChunks));
+    setBusy(true);
+    const r=await fetch('/listen',{method:'POST',body:fd}); handleReply(await r.json());
+    setBusy(false);
+  };
+  mediaRec.start(); micBtn.style.background='red';
+};
 
-micBtn.addEventListener('click', ()=>{
-  if(micBtn.classList.contains('busy')) return;
-  if(recActive) stopRec(); else startRec();
-});
-
-async function startRec(){
-  try{
-    micStream = await navigator.mediaDevices.getUserMedia({audio:true});
-    audioChunks = [];
-    mediaRec = new MediaRecorder(micStream);
-    mediaRec.ondataavailable = e=>audioChunks.push(e.data);
-    mediaRec.onstop = onRecStop;
-    mediaRec.start();
-    recActive = true;
-    micBtn.classList.add('recording');
-    micBtn.textContent = '⏹';
-    document.querySelector('.mic-hint').textContent = 'Click to stop';
-  }catch(err){showToast('Mic error: '+err.message);}
-}
-
-function stopRec(){
-  if(!mediaRec||mediaRec.state==='inactive') return;
-  mediaRec.stop();
-  micStream.getTracks().forEach(t=>t.stop());
-  recActive=false;
-  micBtn.classList.remove('recording');
-  micBtn.textContent='🎤';
-  document.querySelector('.mic-hint').textContent='Click to talk';
-}
-
-async function onRecStop(){
-  const blob = new Blob(audioChunks);
-  if(blob.size < 1000){showToast('Recording too short');return;}
-  setBusy(true);
-  const fd = new FormData(); fd.append('audio',blob);
-  try{
-    const res = await fetch('/listen',{method:'POST',body:fd});
-    handleReply(await res.json());
-  }catch(err){showToast('Error: '+err.message);}
-  finally{setBusy(false);}
-}
-
-// ── Text send ─────────────────────────────────────────────────
-document.getElementById('send-btn').addEventListener('click', sendText);
-document.getElementById('text-input').addEventListener('keydown', e=>{
-  if(e.key==='Enter') sendText();
-});
-
-async function sendText(){
-  const inp=document.getElementById('text-input');
-  const msg=inp.value.trim(); if(!msg) return;
+document.getElementById('send-btn').onclick=async()=>{
+  const inp=document.getElementById('text-input'), m=inp.value.trim(); if(!m) return;
   inp.value=''; setBusy(true);
-  try{
-    const res=await fetch('/text',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message:msg})
-    });
-    handleReply(await res.json());
-  }catch(err){showToast('Error: '+err.message);}
-  finally{setBusy(false);}
-}
+  const r=await fetch('/text',{method:'POST',body:JSON.stringify({message:m})});
+  handleReply(await r.json()); setBusy(false);
+};
 
-// ── Handle server reply ───────────────────────────────────────
-function addChatMessage(role, text) {
-  const history = document.getElementById('chat-history');
-  const div = document.createElement('div');
-  div.className = 'msg ' + role;
-  
-  // Robustness: If text is somehow still JSON, try to extract 'text' field
-  let displayBody = text;
-  if (text.trim().startsWith('{')) {
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed.text) displayBody = parsed.text;
-    } catch(e) {}
-  }
-  
-  div.textContent = displayBody;
-  history.appendChild(div);
-  history.scrollTop = history.scrollHeight;
+function handleReply(d){
+  if(d.error){ showToast(d.error); return; }
+  if(d.transcript) addMsg('user',d.transcript); if(d.reply) addMsg('aishwarya',d.reply);
+  if(d.audio_base64) playAudio(d.audio_base64, d.visemes);
+  if(d.emotion) document.getElementById('emotion-badge').textContent=d.emotion.toUpperCase();
+  if(d.weights) targetWeights = d.weights;
 }
-
-function handleReply(data){
-  if(data.error){showToast(data.error);return;}
-  if(data.transcript) addChatMessage('user', data.transcript);
-  if(data.reply) addChatMessage('aishwarya', data.reply);
-  
-  if(data.emotion){
-    // Update weights for transition logic
-    eTarget = {...(data.weights||{})};
-    // Ensure the badge is updated
-    const badge = document.getElementById('emotion-badge');
-    badge.textContent = (EMO_ICONS[data.emotion]||'😌')+' '+data.emotion.toUpperCase();
-    
-    // Pulse effect on badge for visibility
-    badge.style.transform = 'scale(1.2)';
-    setTimeout(() => badge.style.transform = 'scale(1)', 200);
-  }
-  if(data.audio_base64){
-    playAudio(data.audio_base64, data.visemes||[]);
-  }
+function addMsg(r,t){
+  const h=document.getElementById('chat-history'), d=document.createElement('div');
+  d.className='msg '+r; d.textContent=t; h.appendChild(d); h.scrollTop=h.scrollHeight;
 }
-
-function playAudio(b64, visemes){
-  const buf = b64ToBuffer(b64);
-  const actx = new AudioContext();
+function playAudio(b,v){
+  const buf=b64ToBuf(b), actx=new AudioContext();
   actx.decodeAudioData(buf, ab=>{
-    const src = actx.createBufferSource();
-    src.buffer = ab;
-    src.connect(actx.destination);
-    // Sync viseme start to audio start precisely
-    src.onended = ()=>{ lipPlaying=false; for(const m of LIP_MORPHS) setMorph(m,0); };
-    visQ = visemes;
-    src.start(0);
-    visStart = performance.now();
-    lipPlaying = true;
+    const s=actx.createBufferSource(); s.buffer=ab; s.connect(actx.destination);
+    visQ=v; visStart=performance.now(); lipPlaying=true; s.start(0);
   });
 }
-
-// ── UI helpers ────────────────────────────────────────────────
-function showTranscript(t){
-  const el=document.getElementById('transcript-badge');
-  el.textContent='🗣 '+t; el.classList.add('show');
-  setTimeout(()=>el.classList.remove('show'),5000);
-}
-function showSubtitle(t){
-  const el=document.getElementById('subtitle');
-  el.textContent=t; el.classList.add('show');
-  setTimeout(()=>el.classList.remove('show'),8000);
-}
-function showToast(m){
-  const el=document.getElementById('toast');
-  el.textContent='⚠ '+m; el.classList.add('show');
-  setTimeout(()=>el.classList.remove('show'),4000);
-}
-function setBusy(b){
-  micBtn.classList.toggle('busy',b);
-  document.getElementById('send-btn').disabled=b;
-  document.getElementById('proc-ring').classList.toggle('show',b);
-  setStatus(b?'busy':'ready');
-}
-function setStatus(s){
-  const d=document.getElementById('status-dot');
-  d.className='status-dot'+(s?' '+s:'');
-}
-function b64ToBuffer(b64){
-  const bin=atob(b64),buf=new ArrayBuffer(bin.length),v=new Uint8Array(buf);
-  for(let i=0;i<bin.length;i++) v[i]=bin.charCodeAt(i);
-  return buf;
-}
+function b64ToBuf(b){ const s=atob(b),buf=new ArrayBuffer(s.length),v=new Uint8Array(buf); for(let i=0;i<s.length;i++)v[i]=s.charCodeAt(i); return buf; }
+function setBusy(b){ document.getElementById('proc-ring').classList.toggle('show',b); document.getElementById('status-dot').className='status-dot '+(b?'busy':'ready'); }
+function showToast(m){ const e=document.getElementById('toast'); e.textContent=m; e.classList.add('show'); setTimeout(()=>e.classList.remove('show'),3000); }
 </script>
 </body>
 </html>"""
 
+# ── Internal Pipeline Functions ──────────────────────────────
+
+def _run_pipeline_from_text(transcript: str, language: str):
+    try:
+        print(f"[pipeline] Processing text: {transcript[:50]}...")
+        t0 = time.time()
+        
+        # Step 1: LLM Generation
+        t_llm_start = time.time()
+        reply, llm_emotion = llm.generate_reply(transcript, language)
+        t_llm_end = time.time()
+        print(f"[timer] LLM took: {t_llm_end - t_llm_start:.2f}s")
+
+        # Step 2: Parallelize TTS Synthesis and Emotion Detection
+        t_parallel_start = time.time()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_tts     = executor.submit(tts.synthesise, reply, language)
+            future_emotion = executor.submit(emotions.detect_emotion, reply, llm_emotion)
+            
+            wav_path = future_tts.result()
+            emotion_data = future_emotion.result()
+        t_parallel_end = time.time()
+        print(f"[timer] TTS + Emotion took: {t_parallel_end - t_parallel_start:.2f}s")
+
+        # Step 3: Lip-sync analysis
+        t_lipsync_start = time.time()
+        viseme_evts = lipsync.extract_visemes(wav_path)
+        t_lipsync_end = time.time()
+        print(f"[timer] Lip-sync took: {t_lipsync_end - t_lipsync_start:.2f}s")
+
+        with open(wav_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+        
+        pathlib.Path(wav_path).unlink(missing_ok=True)
+
+        total_time = time.time() - t0
+        print(f"[timer] TOTAL TURNAROUND: {total_time:.2f}s")
+
+        return jsonify({
+            "transcript": transcript,
+            "reply":      reply,
+            "audio_base64": audio_b64,
+            "visemes":    viseme_evts,
+            "emotion":    emotion_data["emotion"],
+            "weights":    emotion_data["weights"],
+        })
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+def _run_pipeline(audio_path: str):
+    try:
+        t_start = time.time()
+        print(f"\n[pipeline] --- NEW REQUEST ---")
+        
+        t_stt_start = time.time()
+        transcript, language = stt.transcribe(audio_path)
+        t_stt_end = time.time()
+        print(f"[timer] STT took: {t_stt_end - t_stt_start:.2f}s")
+        
+        if not transcript:
+            print(f"[pipeline] No speech detected.")
+            return jsonify({"error": "No speech detected."}), 422
+            
+        return _run_pipeline_from_text(transcript, language)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# ── Routes ───────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -650,64 +403,6 @@ def text_input():
     if not message:
         return jsonify({"error": "No message."}), 400
     return _run_pipeline_from_text(message, "en")
-
-def _run_pipeline(audio_path: str):
-    try:
-        t_start = time.time()
-        transcript, language = stt.transcribe(audio_path)
-        print(f"[timer] Transcription took: {time.time() - t_start:.2f}s")
-        
-        if not transcript:
-            return jsonify({"error": "No speech detected."}), 422
-        return _run_pipeline_from_text(transcript, language)
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
-def _run_pipeline_from_text(transcript: str, language: str):
-    try:
-        print(f"\n[pipeline] Starting for: {transcript[:50]}...")
-        t0 = time.time()
-        
-        # Step 1: LLM Generation
-        reply, llm_emotion = llm.generate_reply(transcript, language)
-        t_llm = time.time()
-        print(f"[timer] LLM took: {t_llm - t0:.2f}s")
-
-        # Step 2: Parallelize TTS Synthesis and Emotion Detection
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_tts     = executor.submit(tts.synthesise, reply, language)
-            future_emotion = executor.submit(emotions.detect_emotion, reply, llm_emotion)
-            
-            wav_path = future_tts.result()
-            emotion_data = future_emotion.result()
-        
-        t_tts_emo = time.time()
-        print(f"[timer] TTS + Emotion took: {t_tts_emo - t_llm:.2f}s")
-
-        # Step 3: Lip-sync analysis (Needs the wav_path from TTS)
-        viseme_evts = lipsync.extract_visemes(wav_path)
-        t_lipsync = time.time()
-        print(f"[timer] Lip-sync took: {t_lipsync - t_tts_emo:.2f}s")
-
-        with open(wav_path, "rb") as f:
-            audio_b64 = base64.b64encode(f.read()).decode()
-        
-        pathlib.Path(wav_path).unlink(missing_ok=True)
-
-        print(f"[timer] TOTAL PIPELINE: {time.time() - t0:.2f}s")
-
-        return jsonify({
-            "transcript": transcript,
-            "reply":      reply,
-            "audio_base64": audio_b64,
-            "visemes":    viseme_evts,
-            "emotion":    emotion_data["emotion"],
-            "weights":    emotion_data["weights"],
-        })
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))

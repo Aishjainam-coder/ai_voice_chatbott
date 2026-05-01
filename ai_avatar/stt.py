@@ -15,56 +15,47 @@ Set STT_MODEL env var to override (e.g. STT_MODEL=large).
 """
 
 import os
-import whisper
+from faster_whisper import WhisperModel
 
-# ── Load model once at import time so every request is fast ──
+# ── Load model once at import time ──
 _MODEL_NAME = os.getenv("STT_MODEL", "tiny")
-print(f"[stt] Loading Whisper model '{_MODEL_NAME}' … (first run downloads ~1.5 GB)")
-_model = whisper.load_model(_MODEL_NAME)
-print(f"[stt] Whisper '{_MODEL_NAME}' ready.")
+# compute_type="int8" is much faster on CPU
+_DEVICE = "cpu"
+_COMPUTE_TYPE = "int8"
+
+print(f"[stt] Loading Faster-Whisper model '{_MODEL_NAME}' on {_DEVICE} ({_COMPUTE_TYPE})...")
+try:
+    _model = WhisperModel(_MODEL_NAME, device=_DEVICE, compute_type=_COMPUTE_TYPE)
+    print(f"[stt] Faster-Whisper ready.")
+except Exception as e:
+    print(f"[stt] ERROR: Could not load Faster-Whisper: {e}")
+    _model = None
 
 
 def transcribe(audio_path: str) -> tuple[str, str]:
     """
-    Transcribe `audio_path` and detect the spoken language.
-
-    Parameters
-    ----------
-    audio_path : str
-        Absolute or relative path to any audio file Whisper
-        can read (wav, mp3, webm, ogg, flac, …).
-
-    Returns
-    -------
-    transcript : str
-        Full transcription text.
-    language   : str
-        ISO-639-1 language code detected by Whisper
-        (e.g. "en", "hi", "pa", "ta", "ur").
+    Transcribe `audio_path` using Faster-Whisper.
     """
-    # fp16=False forces CPU-safe float32; set True only on CUDA
-    use_fp16 = False
-
+    if _model is None:
+        print("[stt] Model not loaded, skipping transcription.")
+        return "", "en"
     try:
-        # Whisper's transcribe() handles resampling internally via
-        # ffmpeg, so any sample-rate / channel count works.
-        result = _model.transcribe(
-            audio_path,
-            fp16=use_fp16,
-            task="transcribe",
-            beam_size=1,
-            best_of=1
+        # beam_size=1 is faster; vad_filter removes silence before processing
+        segments, info = _model.transcribe(
+            audio_path, 
+            beam_size=1, 
+            vad_filter=True,
+            language=None # Auto-detect
         )
-    except FileNotFoundError as e:
-        if "ffmpeg" in str(e).lower() or e.errno == 2:
-            raise RuntimeError(
-                "FFmpeg not found! Please install FFmpeg and add it to your system PATH. "
-                "This is required for recording and audio processing."
-            ) from e
-        raise e
+        
+        # segments is a generator, we need to join them
+        text_parts = [s.text for s in segments]
+        transcript = "".join(text_parts).strip()
+        language = info.language
 
-    transcript: str = result["text"].strip()
-    language: str   = result.get("language", "en")  # ISO code
+        print(f"[stt] Detected language: '{language}' (prob: {info.language_probability:.2f}) | Transcript: {transcript[:80]!r}")
+        return transcript, language
 
-    print(f"[stt] Detected language: '{language}'  |  Transcript: {transcript[:80]!r}")
-    return transcript, language
+    except Exception as e:
+        print(f"[stt] Transcription error: {e}")
+        return "", "en"

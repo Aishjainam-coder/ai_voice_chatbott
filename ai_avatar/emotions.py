@@ -63,7 +63,7 @@ _SURPRISED_KEYWORDS = [
 
 _EMOTION_WEIGHTS: dict[str, dict[str, float]] = {
     "happy": {
-        "mouthSmile":       0.95,
+        "mouthSmile":       0.25,
         "cheekSquintLeft":  0.70,
         "cheekSquintRight": 0.70,
         "browInnerUp":      0.30,
@@ -105,7 +105,7 @@ _EMOTION_WEIGHTS: dict[str, dict[str, float]] = {
         "eyeWideLeft":      0.90,
         "eyeWideRight":     0.90,
         "browInnerUp":      0.80,
-        "mouthSmile":       0.20,
+        "mouthSmile":       0.05,
         # reset
         "mouthFrownLeft":   0.00,
         "mouthFrownRight":  0.00,
@@ -115,7 +115,7 @@ _EMOTION_WEIGHTS: dict[str, dict[str, float]] = {
         "cheekSquintRight": 0.00,
     },
     "neutral": {
-        "mouthSmile":       0.05,   # very slight natural smile
+        "mouthSmile":       0.00,   # NO SMILE to keep lips closed
         "mouthFrownLeft":   0.00,
         "mouthFrownRight":  0.00,
         "browDownLeft":     0.00,

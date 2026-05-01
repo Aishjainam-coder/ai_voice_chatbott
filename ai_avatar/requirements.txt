@@ -3,7 +3,7 @@ flask==3.1.0
 flask-cors==6.0.0
 
 # ── Speech-to-Text ─────────────────────
-openai-whisper
+faster-whisper
 tqdm
 typing-extensions>=4.5.0
 
