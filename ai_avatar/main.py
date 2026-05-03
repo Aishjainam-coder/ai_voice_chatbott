@@ -30,6 +30,12 @@ CORS(app)
 _TEMP_DIR = pathlib.Path(os.getenv("TTS_OUTPUT_DIR", "temp_audio"))
 _TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── Welcome message text (Hinglish) ─────────────────────────
+_WELCOME_TEXT = (
+    "Hi… I’m Aishwarya, your personalized AI avatar. I learn from how you interact and respond accordingly — making every conversation feel real."
+)
+_WELCOME_LANGUAGE = "hi"
+
 AVATAR_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -160,6 +166,7 @@ const key=new THREE.DirectionalLight(0xffffff,1.6); key.position.set(1.5,3,2.5);
 
 let avatar=null, morphMesh=null, morphDict={}, isRecording=false;
 let leftEye=null, rightEye=null;
+
 new GLTFLoader().load('/static/avatar.glb', gltf=>{
   avatar=gltf.scene; scene.add(avatar);
   avatar.traverse(o=>{
@@ -175,7 +182,31 @@ new GLTFLoader().load('/static/avatar.glb', gltf=>{
     }
   });
   document.getElementById('status-dot').className='status-dot ready';
+
+  // ── WELCOME: avatar speaks as soon as model is loaded ──────
+  // Small delay so the scene fully settles before audio starts
+  setTimeout(playWelcome, 800);
 });
+
+// ── Welcome function — calls /welcome endpoint ──────────────
+async function playWelcome(){
+  try {
+    setBusy(true);
+    const res  = await fetch('/welcome');
+    const data = await res.json();
+    if(data.error){ console.warn('[welcome] error:', data.error); setBusy(false); return; }
+    // Show her greeting in chat
+    addMsg('aishwarya', data.reply);
+    // Play audio + lipsync + emotion — same as any normal reply
+    if(data.audio_base64) playAudio(data.audio_base64, data.visemes);
+    if(data.emotion) document.getElementById('emotion-badge').textContent=data.emotion.toUpperCase()+' 😊';
+    if(data.weights) targetWeights = data.weights;
+    setBusy(false);
+  } catch(e){
+    console.error('[welcome] fetch failed:', e);
+    setBusy(false);
+  }
+}
 
 let targetWeights = {};
 function setMorph(n,v){ if(morphMesh && morphDict[n]!==undefined) morphMesh.morphTargetInfluences[morphDict[n]]=v; }
@@ -189,73 +220,184 @@ function lipsyncUpdate(){
   if(visQ.length && elapsed>visQ[visQ.length-1].t+visQ[visQ.length-1].dur+0.3) lipPlaying=false;
 }
 
-let blinkVal=0, blinkStep=0, nextBlink=0;
+// ═══════════════════════════════════════════════════════════
+// ANIMATION SYSTEM — Natural Human Feel
+// ═══════════════════════════════════════════════════════════
+
+let avatarState = 'idle';
+
+// ── Blink ────────────────────────────────────────────────────
+let blinkVal=0, blinkPhase=0, nextBlink=2500, pendingDouble=false;
 function blinkUpdate(){
-  if(!morphMesh) return; const now=performance.now();
-  if(now>nextBlink && blinkStep===0) blinkStep=1;
-  if(blinkStep===1){ blinkVal+=0.25; if(blinkVal>=1){ blinkVal=1; blinkStep=2; } }
-  else if(blinkStep===2){ blinkVal-=0.25; if(blinkVal<=0){ blinkVal=0; blinkStep=0; nextBlink=now+2000+Math.random()*4000; } }
-  setMorph('eyeBlinkLeft', blinkVal); setMorph('eyeBlinkRight', blinkVal);
+  if(!morphMesh) return;
+  const now = performance.now();
+  if(now > nextBlink && blinkPhase===0){
+    blinkPhase=1;
+    if(Math.random()<0.12) pendingDouble=true;
+  }
+  if(blinkPhase===1){ blinkVal+=0.13; if(blinkVal>=1){blinkVal=1;blinkPhase=2;} }
+  else if(blinkPhase===2){
+    blinkVal-=0.17;
+    if(blinkVal<=0){
+      blinkVal=0; blinkPhase=0;
+      if(pendingDouble){ pendingDouble=false; nextBlink=now+160; }
+      else { nextBlink = now+2800+Math.random()*3500; }
+    }
+  }
+  setMorph('eyeBlinkLeft',  blinkVal);
+  setMorph('eyeBlinkRight', blinkVal);
+  const sq = (1-blinkVal)*0.07;
+  setMorph('eyeSquintLeft',  sq);
+  setMorph('eyeSquintRight', sq);
 }
 
+// ── Emotion morph lerp ───────────────────────────────────────
 function emotionUpdate(){
   if(!morphMesh) return;
   for(const m in targetWeights){
     if(m.startsWith('viseme_')||m==='jawOpen') continue;
     const idx=morphDict[m]; if(idx===undefined) continue;
-    const current=morphMesh.morphTargetInfluences[idx];
-    morphMesh.morphTargetInfluences[idx] += (targetWeights[m]-current)*0.1;
+    const cur=morphMesh.morphTargetInfluences[idx];
+    morphMesh.morphTargetInfluences[idx] += (targetWeights[m]-cur)*0.06;
   }
 }
 
-let eyeTargetX=0, eyeTargetY=0, nextEyeShift=0;
+// ── Eye gaze ─────────────────────────────────────────────────
+let eyeTargetX=0, eyeTargetY=0, eyeCurX=0, eyeCurY=0, nextEyeShift=0;
 function lookUpdate(){
-  if(!leftEye || !rightEye) return; const now=performance.now();
+  if(!leftEye||!rightEye) return;
+  const now=performance.now();
   if(now>nextEyeShift){
-    if(lipPlaying){
-      // When speaking: more frequent, smaller, and more focused eye movements
-      eyeTargetX=(Math.random()-0.5)*0.1; 
-      eyeTargetY=(Math.random()-0.5)*0.08;
-      nextEyeShift=now+400+Math.random()*1200;
+    if(avatarState==='listening'){
+      eyeTargetX=0; eyeTargetY=0;
+      nextEyeShift=now+2000;
+    } else if(avatarState==='thinking'){
+      eyeTargetX=(Math.random()-0.5)*0.14;
+      eyeTargetY=-0.04-Math.random()*0.04;
+      nextEyeShift=now+600+Math.random()*800;
+    } else if(avatarState==='speaking'){
+      eyeTargetX=(Math.random()-0.5)*0.07;
+      eyeTargetY=(Math.random()-0.5)*0.04;
+      nextEyeShift=now+500+Math.random()*1200;
     } else {
-      // Idle: slower, wider eye movements
-      eyeTargetX=(Math.random()-0.5)*0.25; 
-      eyeTargetY=(Math.random()-0.5)*0.15;
-      nextEyeShift=now+1000+Math.random()*3000;
+      eyeTargetX=(Math.random()-0.5)*0.09;
+      eyeTargetY=(Math.random()-0.5)*0.05;
+      nextEyeShift=now+2200+Math.random()*3000;
     }
   }
-  const speed = lipPlaying ? 0.12 : 0.08; // Slightly faster reaction when speaking
-  leftEye.rotation.y += (eyeTargetX-leftEye.rotation.y)*speed;
-  leftEye.rotation.x += (eyeTargetY-leftEye.rotation.x)*speed;
-  rightEye.rotation.y += (eyeTargetX-rightEye.rotation.y)*speed;
-  rightEye.rotation.x += (eyeTargetY-rightEye.rotation.x)*speed;
+  eyeCurX += (eyeTargetX-eyeCurX)*0.07;
+  eyeCurY += (eyeTargetY-eyeCurY)*0.07;
+  leftEye.rotation.y  = eyeCurX; leftEye.rotation.x  = eyeCurY;
+  rightEye.rotation.y = eyeCurX; rightEye.rotation.x = eyeCurY;
 }
 
-function idleUpdate(){
+// ── Head motion ──────────────────────────────────────────────
+let hCurX=0,hCurY=0,hCurZ=0, hTgtX=0,hTgtY=0,hTgtZ=0, nextHeadShift=0;
+let nodActive=false, nodPhase=0;
+
+function headUpdate(){
+  if(!avatar) return;
+  const now=performance.now();
+  if(now>nextHeadShift){
+    if(avatarState==='listening'){
+      hTgtX= 0.010+Math.random()*0.006;
+      hTgtY=(Math.random()-0.5)*0.010;
+      hTgtZ=(Math.random()-0.5)*0.008;
+      nextHeadShift=now+2500+Math.random()*2000;
+    } else if(avatarState==='thinking'){
+      hTgtX= 0.014+Math.random()*0.006;
+      hTgtY=(Math.random()-0.5)*0.016;
+      hTgtZ= 0.008+Math.random()*0.008;
+      nextHeadShift=now+700+Math.random()*800;
+    } else if(avatarState==='speaking'){
+      hTgtX=(Math.random()-0.5)*0.018;
+      hTgtY=(Math.random()-0.5)*0.020;
+      hTgtZ=(Math.random()-0.5)*0.012;
+      nextHeadShift=now+500+Math.random()*900;
+    } else {
+      hTgtX=(Math.random()-0.5)*0.010;
+      hTgtY=(Math.random()-0.5)*0.012;
+      hTgtZ=(Math.random()-0.5)*0.007;
+      nextHeadShift=now+3000+Math.random()*3000;
+    }
+  }
+  const spd = avatarState==='speaking' ? 0.016 : 0.008;
+  hCurX+=(hTgtX-hCurX)*spd;
+  hCurY+=(hTgtY-hCurY)*spd;
+  hCurZ+=(hTgtZ-hCurZ)*spd;
+  let nodOffset=0;
+  if(nodActive){
+    nodPhase+=0.10;
+    nodOffset = Math.sin(nodPhase)*0.022;
+    if(nodPhase>Math.PI) nodActive=false;
+  }
+  avatar.rotation.x = hCurX + nodOffset;
+  avatar.rotation.y = hCurY;
+  avatar.rotation.z = hCurZ;
+}
+
+function triggerNod(){ nodActive=true; nodPhase=0; }
+
+// ── Micro expressions ─────────────────────────────────────────
+function microUpdate(){
+  if(!morphMesh) return;
+  const jawNow = morphDict['jawOpen']!==undefined
+    ? morphMesh.morphTargetInfluences[morphDict['jawOpen']] : 0;
+  if(avatarState==='speaking'){
+    const brow = jawNow*0.30;
+    _lerp('browInnerUp',     brow,     0.08);
+    _lerp('browOuterUpLeft', brow*0.5, 0.08);
+    _lerp('browOuterUpRight',brow*0.5, 0.08);
+    _lerp('cheekSquintLeft', jawNow*0.18, 0.08);
+    _lerp('cheekSquintRight',jawNow*0.18, 0.08);
+  } else if(avatarState==='thinking'){
+    _lerp('browInnerUp',      0.12, 0.04);
+    _lerp('browOuterUpLeft',  0.06, 0.04);
+    _lerp('browOuterUpRight', 0.02, 0.04);
+    _lerp('cheekSquintLeft',  0,    0.04);
+    _lerp('cheekSquintRight', 0,    0.04);
+  } else {
+    _lerp('browInnerUp',      0, 0.03);
+    _lerp('browOuterUpLeft',  0, 0.03);
+    _lerp('browOuterUpRight', 0, 0.03);
+    _lerp('cheekSquintLeft',  0, 0.03);
+    _lerp('cheekSquintRight', 0, 0.03);
+  }
+}
+
+function _lerp(name, target, speed){
+  if(!morphMesh||morphDict[name]===undefined) return;
+  const i=morphDict[name];
+  morphMesh.morphTargetInfluences[i]+=(target-morphMesh.morphTargetInfluences[i])*speed;
+}
+
+// ── Breathing ─────────────────────────────────────────────────
+function breathUpdate(){
+  if(!avatar) return;
   const t=performance.now()*0.001;
-  if(avatar){
-    avatar.position.y = Math.sin(t*0.6)*0.003;
-    if(isRecording){
-      avatar.rotation.y *= 0.8; avatar.rotation.x *= 0.8;
-      eyeTargetX=0; eyeTargetY=0; // Look straight while listening
-    } else {
-      avatar.rotation.y = Math.sin(t*0.2)*0.02;
-      avatar.rotation.x = Math.cos(t*0.3)*0.01;
-    }
-  }
-  blinkUpdate();
-  lookUpdate();
+  avatar.position.y = Math.sin(t*0.40)*0.0022;
 }
 
+// ── Thinking animation ────────────────────────────────────────
+let thinkTimer=null;
+function startThinking(){
+  avatarState='thinking';
+  eyeTargetX=0.08; eyeTargetY=-0.05; nextEyeShift=performance.now()+9999;
+}
+function stopThinking(){ clearTimeout(thinkTimer); }
+
+// ── Main render loop ──────────────────────────────────────────
+function idleUpdate(){
+  breathUpdate(); blinkUpdate(); lookUpdate(); headUpdate(); microUpdate();
+}
 function animate(){
   requestAnimationFrame(animate);
-  idleUpdate();
-  emotionUpdate();
-  lipsyncUpdate();
+  idleUpdate(); emotionUpdate(); lipsyncUpdate();
   renderer.render(scene,camera);
 }
 animate();
 
+// ── Mic button ────────────────────────────────────────────────
 const micBtn=document.getElementById('mic-btn'); let mediaRec=null, audioChunks=[];
 micBtn.onclick=async()=>{
   if(mediaRec && mediaRec.state==='recording'){ mediaRec.stop(); micBtn.style.background=''; isRecording=false; return; }
@@ -263,26 +405,38 @@ micBtn.onclick=async()=>{
   mediaRec=new MediaRecorder(stream); audioChunks=[]; isRecording=true;
   mediaRec.ondataavailable=e=>audioChunks.push(e.data);
   mediaRec.onstop=async()=>{
-    isRecording=false;
-    const res=await fetch('/listen',{method:'POST',body:new FormData()}); // Dummy for brevity in this example, actual uses blob
+    isRecording=false; micBtn.style.background='';
+    startThinking();
     const fd=new FormData(); fd.append('audio',new Blob(audioChunks));
     setBusy(true);
     const r=await fetch('/listen',{method:'POST',body:fd}); handleReply(await r.json());
-    setBusy(false);
+    setBusy(false); stopThinking();
   };
-  mediaRec.start(); micBtn.style.background='red';
+  mediaRec.start(); micBtn.style.background='red'; avatarState='listening';
 };
 
+// ── Send button ───────────────────────────────────────────────
 document.getElementById('send-btn').onclick=async()=>{
   const inp=document.getElementById('text-input'), m=inp.value.trim(); if(!m) return;
-  inp.value=''; setBusy(true);
-  const r=await fetch('/text',{method:'POST',body:JSON.stringify({message:m})});
-  handleReply(await r.json()); setBusy(false);
+  inp.value=''; startThinking(); setBusy(true);
+  const r=await fetch('/text',{method:'POST',body:JSON.stringify({message:m}),headers:{'Content-Type':'application/json'}});
+  handleReply(await r.json()); stopThinking(); setBusy(false);
 };
 
+// ── Enter key to send ─────────────────────────────────────────
+document.getElementById('text-input').addEventListener('keydown', async(e)=>{
+  if(e.key !== 'Enter') return;
+  const inp=document.getElementById('text-input'), m=inp.value.trim(); if(!m) return;
+  inp.value=''; startThinking(); setBusy(true);
+  const r=await fetch('/text',{method:'POST',body:JSON.stringify({message:m}),headers:{'Content-Type':'application/json'}});
+  handleReply(await r.json()); stopThinking(); setBusy(false);
+});
+
+// ── Shared helpers ────────────────────────────────────────────
 function handleReply(d){
   if(d.error){ showToast(d.error); return; }
-  if(d.transcript) addMsg('user',d.transcript); if(d.reply) addMsg('aishwarya',d.reply);
+  if(d.transcript) addMsg('user',d.transcript);
+  if(d.reply) addMsg('aishwarya',d.reply);
   if(d.audio_base64) playAudio(d.audio_base64, d.visemes);
   if(d.emotion) document.getElementById('emotion-badge').textContent=d.emotion.toUpperCase();
   if(d.weights) targetWeights = d.weights;
@@ -295,7 +449,9 @@ function playAudio(b,v){
   const buf=b64ToBuf(b), actx=new AudioContext();
   actx.decodeAudioData(buf, ab=>{
     const s=actx.createBufferSource(); s.buffer=ab; s.connect(actx.destination);
-    visQ=v; visStart=performance.now(); lipPlaying=true; s.start(0);
+    avatarState='speaking'; triggerNod();
+    visQ=v; s.start(0); visStart=performance.now(); lipPlaying=true;
+    s.onended=()=>{ lipPlaying=false; avatarState='idle'; };
   });
 }
 function b64ToBuf(b){ const s=atob(b),buf=new ArrayBuffer(s.length),v=new Uint8Array(buf); for(let i=0;i<s.length;i++)v[i]=s.charCodeAt(i); return buf; }
@@ -311,68 +467,96 @@ def _run_pipeline_from_text(transcript: str, language: str):
     try:
         print(f"[pipeline] Processing text: {transcript[:50]}...")
         t0 = time.time()
-        
-        # Step 1: LLM Generation
+
         t_llm_start = time.time()
         reply, llm_emotion = llm.generate_reply(transcript, language)
-        t_llm_end = time.time()
-        print(f"[timer] LLM took: {t_llm_end - t_llm_start:.2f}s")
+        print(f"[timer] LLM took: {time.time() - t_llm_start:.2f}s")
 
-        # Step 2: Parallelize TTS Synthesis and Emotion Detection
         t_parallel_start = time.time()
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_tts     = executor.submit(tts.synthesise, reply, language)
             future_emotion = executor.submit(emotions.detect_emotion, reply, llm_emotion)
-            
-            wav_path = future_tts.result()
+            wav_path     = future_tts.result()
             emotion_data = future_emotion.result()
-        t_parallel_end = time.time()
-        print(f"[timer] TTS + Emotion took: {t_parallel_end - t_parallel_start:.2f}s")
+        print(f"[timer] TTS + Emotion took: {time.time() - t_parallel_start:.2f}s")
 
-        # Step 3: Lip-sync analysis
         t_lipsync_start = time.time()
         viseme_evts = lipsync.extract_visemes(wav_path)
-        t_lipsync_end = time.time()
-        print(f"[timer] Lip-sync took: {t_lipsync_end - t_lipsync_start:.2f}s")
+        print(f"[timer] Lip-sync took: {time.time() - t_lipsync_start:.2f}s")
 
         with open(wav_path, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode()
-        
         pathlib.Path(wav_path).unlink(missing_ok=True)
 
-        total_time = time.time() - t0
-        print(f"[timer] TOTAL TURNAROUND: {total_time:.2f}s")
+        print(f"[timer] TOTAL TURNAROUND: {time.time() - t0:.2f}s")
 
         return jsonify({
-            "transcript": transcript,
-            "reply":      reply,
+            "transcript":   transcript,
+            "reply":        reply,
             "audio_base64": audio_b64,
-            "visemes":    viseme_evts,
-            "emotion":    emotion_data["emotion"],
-            "weights":    emotion_data["weights"],
+            "visemes":      viseme_evts,
+            "emotion":      emotion_data["emotion"],
+            "weights":      emotion_data["weights"],
         })
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+
 def _run_pipeline(audio_path: str):
     try:
-        t_start = time.time()
         print(f"\n[pipeline] --- NEW REQUEST ---")
-        
         t_stt_start = time.time()
         transcript, language = stt.transcribe(audio_path)
-        t_stt_end = time.time()
-        print(f"[timer] STT took: {t_stt_end - t_stt_start:.2f}s")
-        
+        print(f"[timer] STT took: {time.time() - t_stt_start:.2f}s")
         if not transcript:
             print(f"[pipeline] No speech detected.")
             return jsonify({"error": "No speech detected."}), 422
-            
         return _run_pipeline_from_text(transcript, language)
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+# ── NEW: Welcome endpoint ─────────────────────────────────────
+def _build_welcome_response():
+    """
+    Pre-generate the welcome audio + visemes using TTS + lipsync.
+    Bypasses the LLM entirely — no delay, instant on load.
+    """
+    try:
+        print("[welcome] Generating welcome message...")
+        t0 = time.time()
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_tts     = executor.submit(tts.synthesise, _WELCOME_TEXT, _WELCOME_LANGUAGE, "welcome.wav")
+            future_emotion = executor.submit(emotions.detect_emotion, _WELCOME_TEXT, "happy")
+            wav_path     = future_tts.result()
+            emotion_data = future_emotion.result()
+
+        viseme_evts = lipsync.extract_visemes(wav_path)
+
+        with open(wav_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+        pathlib.Path(wav_path).unlink(missing_ok=True)
+
+        print(f"[welcome] Ready in {time.time() - t0:.2f}s")
+        return {
+            "reply":        _WELCOME_TEXT,
+            "audio_base64": audio_b64,
+            "visemes":      viseme_evts,
+            "emotion":      emotion_data["emotion"],
+            "weights":      emotion_data["weights"],
+        }
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return None
+
+
+# Pre-build welcome at startup so first load is instant
+print("[welcome] Pre-generating welcome audio at startup...")
+_WELCOME_CACHE = _build_welcome_response()
+
 
 # ── Routes ───────────────────────────────────────────────────
 
@@ -383,6 +567,17 @@ def index():
 @app.route("/static/<path:filename>")
 def serve_static(filename):
     return send_from_directory("static", filename)
+
+@app.route("/welcome", methods=["GET"])
+def welcome():
+    """Called by the frontend once the avatar GLB is loaded."""
+    if _WELCOME_CACHE:
+        return jsonify(_WELCOME_CACHE)
+    # fallback: generate on the fly if startup cache failed
+    data = _build_welcome_response()
+    if data:
+        return jsonify(data)
+    return jsonify({"error": "Welcome generation failed."}), 500
 
 @app.route("/listen", methods=["POST"])
 def listen():

@@ -42,10 +42,11 @@ def transcribe(audio_path: str) -> tuple[str, str]:
     try:
         # beam_size=1 is faster; vad_filter removes silence before processing
         segments, info = _model.transcribe(
-            audio_path, 
-            beam_size=1, 
+            audio_path,
+            beam_size=1,
             vad_filter=True,
-            language=None # Auto-detect
+            vad_parameters={"min_silence_duration_ms": 300},  # cuts silence faster
+            language=None
         )
         
         # segments is a generator, we need to join them
